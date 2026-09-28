@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: databric-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: AT_API_KEY
+        sync: false
+      - key: AT_USERNAME
+        sync: false
+      - key: RELAY_SECRET_KEY
+        generateValue: true
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://databric.app
