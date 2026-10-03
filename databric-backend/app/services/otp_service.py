@@ -117,8 +117,7 @@ async def _send_whatsapp(phone_number: str, otp: str) -> bool:
                 data={
                     "From": f"whatsapp:{settings.TWILIO_WHATSAPP_FROM}",
                     "To": f"whatsapp:{phone_number}",
-                    "ContentSid": "HXb5b62575e6e4ff6129ad7c8efe1f983e",
-                    "ContentVariables": json.dumps({"1": otp}),
+                    "Body": body,
                 },
                 timeout=10.0,
             )
