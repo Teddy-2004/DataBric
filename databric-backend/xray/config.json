@@ -1,0 +1,117 @@
+{
+  "_comment": "DataBric Relay Node — Xray-core VLESS+Reality config",
+  "_usage": "Run with: xray -c /etc/xray/config.json",
+  "_keygen": "Generate keys with: xray x25519",
+
+  "log": {
+    "loglevel": "warning",
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log"
+  },
+
+  "inbounds": [
+    {
+      "_comment": "VLESS+Reality inbound — listens for buyer connections",
+      "listen": "0.0.0.0",
+      "port": 8443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [],
+        "_note": "Clients are added/removed dynamically via Xray API when sessions start/end",
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "_comment": "Reality borrows TLS cert from a real website (e.g. google.com)",
+          "_why": "Traffic is cryptographically identical to HTTPS to google.com. DPI cannot distinguish it.",
+          "show": false,
+          "dest": "www.google.com:443",
+          "xver": 0,
+          "serverNames": [
+            "www.google.com",
+            "google.com"
+          ],
+          "privateKey": "REPLACE_WITH_GENERATED_PRIVATE_KEY",
+          "publicKey": "REPLACE_WITH_GENERATED_PUBLIC_KEY",
+          "minClientVer": "",
+          "maxClientVer": "",
+          "maxTimeDiff": 70000,
+          "shortIds": [
+            "REPLACE_WITH_SHORT_ID_1",
+            "REPLACE_WITH_SHORT_ID_2"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": false
+      }
+    }
+  ],
+
+  "outbounds": [
+    {
+      "_comment": "Traffic exits through the seller's phone via reverse proxy tunnel",
+      "protocol": "freedom",
+      "settings": {},
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {},
+      "tag": "blocked"
+    }
+  ],
+
+  "api": {
+    "_comment": "Xray management API — used by DataBric relay service to add/remove VLESS clients dynamically",
+    "tag": "api",
+    "services": [
+      "HandlerService",
+      "StatsService",
+      "LoggerService"
+    ]
+  },
+
+  "stats": {},
+
+  "policy": {
+    "levels": {
+      "0": {
+        "handshakeTimeout": 4,
+        "connIdle": 300,
+        "uplinkOnly": 2,
+        "downlinkOnly": 5,
+        "statsUserUplink": true,
+        "statsUserDownlink": true
+      }
+    },
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true,
+      "statsOutboundUplink": true,
+      "statsOutboundDownlink": true
+    }
+  },
+
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "_comment": "Route API calls to the management API",
+        "inboundTag": ["api"],
+        "outboundTag": "api",
+        "type": "field"
+      },
+      {
+        "_comment": "Block known malware/illegal domains — Phase 3 expansion",
+        "type": "field",
+        "domain": [
+          "geosite:category-ads-all"
+        ],
+        "outboundTag": "blocked"
+      }
+    ]
+  }
+}
