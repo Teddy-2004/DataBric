@@ -10,19 +10,35 @@ services:
         value: production
       - key: SECRET_KEY
         generateValue: true
+      # ── Database ───────────────────────────────────────────────
+      - key: DATABASE_URL
+        sync: false
+      # ── Supabase ───────────────────────────────────────────────
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
       - key: SUPABASE_JWT_SECRET
         sync: false
+      # ── Twilio (WhatsApp OTP) ──────────────────────────────────
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+      # ── Africa's Talking (SMS fallback) ────────────────────────
       - key: AT_API_KEY
         sync: false
       - key: AT_USERNAME
         sync: false
+      - key: AT_SENDER_ID
+        value: DataBric
+      # ── Relay & Firebase ───────────────────────────────────────
       - key: RELAY_SECRET_KEY
         generateValue: true
       - key: FIREBASE_PROJECT_ID
         sync: false
+      # ── CORS ───────────────────────────────────────────────────
       - key: ALLOWED_ORIGINS
         value: https://databric.app
