@@ -93,11 +93,12 @@ async def send_otp(phone_number: str) -> bool:
 
 async def _send_whatsapp(phone_number: str, otp: str) -> bool:
     """
-    Send OTP via Twilio WhatsApp. Requires TWILIO_ACCOUNT_SID,
-    TWILIO_AUTH_TOKEN, and TWILIO_WHATSAPP_FROM to be configured.
+    Send OTP via Twilio WhatsApp.
 
-    Returns False (silently) if Twilio isn't configured — so the caller
-    can fall through to the SMS path without raising.
+    Tries the configured TWILIO_WHATSAPP_FROM sender first (plain Body).
+    If the account enforces ContentSid (error 21654 — trial/WhatsApp Business
+    senders), falls back to the Twilio sandbox number which accepts free-form
+    Body for opted-in users.
     """
     if not (settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN):
         logger.warning("Twilio credentials not configured — skipping WhatsApp")
@@ -108,27 +109,40 @@ async def _send_whatsapp(phone_number: str, otp: str) -> bool:
         "Valid for 5 minutes. Do not share this code with anyone."
     )
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"https://api.twilio.com/2010-04-01/Accounts/"
-                f"{settings.TWILIO_ACCOUNT_SID}/Messages.json",
-                auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
-                data={
-                    "From": f"whatsapp:{settings.TWILIO_WHATSAPP_FROM}",
-                    "To": f"whatsapp:{phone_number}",
-                    "Body": body,
-                },
-                timeout=10.0,
+    senders = [settings.TWILIO_WHATSAPP_FROM]
+    # Always include the sandbox as a fallback so trial accounts work
+    # (sandbox requires the recipient to have joined via 'join <keyword>')
+    sandbox = "+14155238886"
+    if settings.TWILIO_WHATSAPP_FROM != sandbox:
+        senders.append(sandbox)
+
+    for sender in senders:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://api.twilio.com/2010-04-01/Accounts/"
+                    f"{settings.TWILIO_ACCOUNT_SID}/Messages.json",
+                    auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
+                    data={
+                        "From": f"whatsapp:{sender}",
+                        "To": f"whatsapp:{phone_number}",
+                        "Body": body,
+                    },
+                    timeout=10.0,
+                )
+            if resp.status_code == 201:
+                logger.info(f"WhatsApp OTP sent via {sender} to {phone_number}")
+                return True
+            resp_json = resp.json()
+            twilio_code = resp_json.get("code")
+            logger.warning(
+                f"Twilio WhatsApp error {resp.status_code} "
+                f"(code {twilio_code}) via {sender}: {resp_json.get('message')}"
             )
-        if resp.status_code == 201:
-            logger.info(f"WhatsApp OTP sent successfully to {phone_number}")
-            return True
-        logger.error(f"Twilio WhatsApp error {resp.status_code}: {resp.text}")
-        return False
-    except Exception as e:
-        logger.error(f"WhatsApp send failed for {phone_number}: {e}")
-        return False
+        except Exception as e:
+            logger.error(f"WhatsApp send exception via {sender} for {phone_number}: {e}")
+
+    return False
 
 
 async def _send_sms_fallback(phone_number: str, otp: str) -> bool:
