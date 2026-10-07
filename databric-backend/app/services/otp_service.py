@@ -58,6 +58,8 @@ async def verify_otp(phone_number: str, otp_code: str) -> bool:
     In development: always accepts 123456.
     In production: same — until real OTP generation is added.
     """
+    logger.info(f"[DEBUG] verify_otp called | phone={phone_number!r} | otp_code={otp_code!r} | len={len(otp_code)} | match={'123456' == otp_code}")
     if otp_code == "123456":
         return True
+    logger.warning(f"[DEBUG] OTP mismatch — received bytes: {otp_code.encode()}")
     return False
