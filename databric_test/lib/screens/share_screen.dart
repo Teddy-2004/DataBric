@@ -1,18 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:databric/debug/debug_seller_tunnel_card.dart';
 import 'package:databric/models/models.dart';
 import 'package:databric/providers/friends_provider.dart';
 import 'package:databric/providers/session_provider.dart';
 import 'package:databric/services/xray_service.dart';
 import 'package:databric/theme/app_theme.dart';
 import 'package:databric/widgets/widgets.dart';
-import 'package:databric/screens/friends_screen.dart';
 
-// Backend enforces 0.1..50 GB. Until we have a real carrier-balance signal
-// from the device, the UI lets the seller pick anywhere in that range and
-// the backend is the source of truth.
-const double _minShareGb = 0.5;
-const double _maxShareGb = 20.0;
+// Placeholder until carrier balance API is available.
+const double _kAvailableGb = 10.0;
+const double _kTotalGb = 10.0;
 
 class ShareDataScreen extends StatelessWidget {
   const ShareDataScreen({super.key});
@@ -41,10 +39,6 @@ class ShareDataScreen extends StatelessWidget {
     return const _IdleView();
   }
 }
-
-// ─────────────────────────────────────────────────────────────
-// IDLE VIEW
-// ─────────────────────────────────────────────────────────────
 
 class _IdleView extends StatefulWidget {
   const _IdleView();
@@ -80,10 +74,11 @@ class _IdleViewState extends State<_IdleView>
   }
 
   void _updateAmount(double newValue) {
-    newValue = newValue.clamp(_minShareGb, _maxShareGb);
+    const maxGb = _kAvailableGb;
+    final clamped = newValue.clamp(0.5, maxGb).toDouble();
     setState(() {
-      _shareAmountGb = newValue;
-      _amountController.text = _formatGb(newValue);
+      _shareAmountGb = clamped;
+      _amountController.text = _formatGb(clamped);
     });
   }
 
@@ -97,8 +92,8 @@ class _IdleViewState extends State<_IdleView>
   Widget build(BuildContext context) {
     final friends = context.watch<FriendsProvider>();
     final session = context.watch<SessionProvider>();
-    final acceptedFriends = friends.accepted;
-    final hasFriends = acceptedFriends.isNotEmpty;
+    const maxGb = _kAvailableGb;
+    final hasFriends = friends.accepted.isNotEmpty;
 
     return SafeArea(
       child: Column(
@@ -110,8 +105,6 @@ class _IdleViewState extends State<_IdleView>
                 style: Theme.of(context).textTheme.displayLarge),
           ),
           const SizedBox(height: 16),
-
-          // Tab bar
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Container(
@@ -139,33 +132,74 @@ class _IdleViewState extends State<_IdleView>
             ),
           ),
           const SizedBox(height: 16),
-
           Expanded(
             child: TabBarView(
               controller: _tab,
               children: [
-                // ── SELLER TAB ──────────────────────────────
                 ListView(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   children: [
-                    // Friend picker
-                    const SectionLabel('Share with'),
+                    SurfaceCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SectionLabel('Available to share'),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              AmountLabel(gb: _kAvailableGb, fontSize: 36),
+                              const Spacer(),
+                              Text('of ${_kTotalGb.toInt()} GB',
+                                  style: Theme.of(context).textTheme.bodyMedium),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: _kAvailableGb / _kTotalGb,
+                              backgroundColor: AppTheme.border,
+                              valueColor: AlwaysStoppedAnimation(AppTheme.primary),
+                              minHeight: 4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    SectionLabel('Share with'),
                     if (!hasFriends)
-                      _NoFriendsCard()
+                      SurfaceCard(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            children: [
+                              Icon(Icons.people_outline_rounded,
+                                  size: 48, color: AppTheme.textTertiary),
+                              const SizedBox(height: 12),
+                              Text('No friends yet',
+                                  style: Theme.of(context).textTheme.titleMedium),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Add friends to start sharing data',
+                                style: Theme.of(context).textTheme.bodyMedium,
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
                     else if (_selectedReceiver != null)
                       _SelectedFriendCard(
                         friend: _selectedReceiver!,
-                        onClear: () =>
-                            setState(() => _selectedReceiver = null),
+                        onClear: () => setState(() => _selectedReceiver = null),
                       )
                     else
-                      _buildFriendPicker(context, acceptedFriends),
-
+                      _buildFriendPicker(context, friends.accepted),
                     const SizedBox(height: 16),
-
-                    // Amount picker — only shown after friend selected
                     if (_selectedReceiver != null) ...[
-                      const SectionLabel('How much to share'),
+                      SectionLabel('How much to share'),
                       SurfaceCard(
                         child: Column(
                           children: [
@@ -177,15 +211,11 @@ class _IdleViewState extends State<_IdleView>
                                   child: TextField(
                                     controller: _amountController,
                                     textAlign: TextAlign.center,
-                                    keyboardType:
-                                        const TextInputType.numberWithOptions(
-                                            decimal: true),
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
                                     style: Theme.of(context)
                                         .textTheme
                                         .displayLarge
-                                        ?.copyWith(
-                                            fontSize: 48,
-                                            fontWeight: FontWeight.w600),
+                                        ?.copyWith(fontSize: 48, fontWeight: FontWeight.w600),
                                     decoration: const InputDecoration(
                                       border: InputBorder.none,
                                       contentPadding: EdgeInsets.zero,
@@ -194,9 +224,7 @@ class _IdleViewState extends State<_IdleView>
                                   ),
                                 ),
                                 const Text(' GB',
-                                    style: TextStyle(
-                                        fontSize: 28,
-                                        fontWeight: FontWeight.w500)),
+                                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500)),
                               ],
                             ),
                             const SizedBox(height: 16),
@@ -204,32 +232,27 @@ class _IdleViewState extends State<_IdleView>
                               children: [
                                 _CircleBtn(
                                     icon: Icons.remove,
-                                    onTap: () => _updateAmount(
-                                        _shareAmountGb - 0.5)),
+                                    onTap: () => _updateAmount(_shareAmountGb - 0.5)),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Slider(
                                     value: _shareAmountGb,
-                                    min: _minShareGb,
-                                    max: _maxShareGb,
-                                    divisions:
-                                        ((_maxShareGb - _minShareGb) / 0.5).round(),
+                                    min: 0.5,
+                                    max: maxGb,
+                                    divisions: ((maxGb - 0.5) / 0.5).round(),
                                     onChanged: _updateAmount,
                                   ),
                                 ),
                                 const SizedBox(width: 8),
                                 _CircleBtn(
                                     icon: Icons.add,
-                                    onTap: () => _updateAmount(
-                                        _shareAmountGb + 0.5)),
+                                    onTap: () => _updateAmount(_shareAmountGb + 0.5)),
                               ],
                             ),
                           ],
                         ),
                       ),
                       const SizedBox(height: 12),
-
-                      // Info card
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
@@ -238,16 +261,13 @@ class _IdleViewState extends State<_IdleView>
                         ),
                         child: Row(
                           children: [
-                            const Icon(Icons.info_outline_rounded,
+                            Icon(Icons.info_outline_rounded,
                                 size: 18, color: AppTheme.primaryDark),
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
-                                'Only ${_selectedReceiver!.name.split(" ").first} '
-                                'can connect to this session.',
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppTheme.primaryDark),
+                                'Only ${_selectedReceiver!.name.split(" ").first} can connect to this session.',
+                                style: const TextStyle(fontSize: 12, color: AppTheme.primaryDark),
                               ),
                             ),
                           ],
@@ -255,35 +275,29 @@ class _IdleViewState extends State<_IdleView>
                       ),
                       const SizedBox(height: 16),
                     ],
-
                     if (session.error != null)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: Text(session.error!,
-                            style: const TextStyle(
-                                color: AppTheme.sent, fontSize: 13)),
+                            style: TextStyle(color: AppTheme.sent, fontSize: 13)),
                       ),
-
                     ElevatedButton(
-                      onPressed:
-                          (session.isLoading || _selectedReceiver == null)
-                              ? null
-                              : () => session.startSharing(
-                                    _shareAmountGb,
-                                    receiverId: _selectedReceiver!.id,
-                                  ),
+                      onPressed: (session.isLoading || _selectedReceiver == null)
+                          ? null
+                          : () => session.startSharing(
+                                _shareAmountGb,
+                                receiverId: _selectedReceiver!.id,
+                              ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: _selectedReceiver == null
-                            ? AppTheme.border
-                            : AppTheme.primary,
+                        backgroundColor:
+                            _selectedReceiver == null ? AppTheme.border : AppTheme.primary,
                         minimumSize: const Size(double.infinity, 52),
                       ),
                       child: session.isLoading
                           ? const SizedBox(
                               width: 20,
                               height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                             )
                           : Text(
                               _selectedReceiver == null
@@ -292,11 +306,10 @@ class _IdleViewState extends State<_IdleView>
                                       '${_selectedReceiver!.name.split(" ").first}',
                             ),
                     ),
+                    const DebugSellerTunnelCard(),
                     const SizedBox(height: 24),
                   ],
                 ),
-
-                // ── BUYER TAB ──────────────────────────────
                 const _BuyerTab(),
               ],
             ),
@@ -319,83 +332,22 @@ class _IdleViewState extends State<_IdleView>
                 ListTile(
                   leading: FriendAvatar(friend: friend),
                   title: Text(friend.name,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontSize: 14)),
-                  subtitle: Text('${friend.carrier} · ${friend.city}'.trim(),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 14)),
+                  subtitle: Text('${friend.carrier} · ${friend.city}',
                       style: Theme.of(context).textTheme.bodyMedium),
-                  trailing: const Icon(Icons.chevron_right_rounded,
-                      color: AppTheme.textTertiary),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: AppTheme.textTertiary),
                   onTap: () => setState(() => _selectedReceiver = friend),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 ),
-                if (!isLast) const RowDivider(),
+                if (!isLast) RowDivider(),
               ],
             );
           }),
-          const RowDivider(),
-          ListTile(
-            leading: Container(
-              width: 36,
-              height: 36,
-              decoration: const BoxDecoration(
-                color: AppTheme.primaryLight,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.person_add_outlined,
-                  size: 18, color: AppTheme.primary),
-            ),
-            title: const Text('Add a new friend',
-                style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                    color: AppTheme.primary)),
-            trailing: const Icon(Icons.chevron_right_rounded,
-                color: AppTheme.textTertiary),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const FriendsScreen()),
-            ),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          ),
         ],
       ),
     );
   }
 }
-
-class _NoFriendsCard extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return SurfaceCard(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          children: [
-            const Icon(Icons.people_outline_rounded,
-                size: 48, color: AppTheme.textTertiary),
-            const SizedBox(height: 12),
-            Text('No friends yet',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              'Add friends to start sharing data',
-              style: Theme.of(context).textTheme.bodyMedium,
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// BUYER TAB
-// ─────────────────────────────────────────────────────────────
 
 class _BuyerTab extends StatelessWidget {
   const _BuyerTab();
@@ -408,7 +360,7 @@ class _BuyerTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       children: [
-        const SectionLabel('Connect to a friend'),
+        SectionLabel('Connect to a friend'),
         Container(
           padding: const EdgeInsets.all(14),
           margin: const EdgeInsets.only(bottom: 16),
@@ -416,15 +368,13 @@ class _BuyerTab extends StatelessWidget {
             color: AppTheme.blueLight,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Row(
+          child: Row(
             children: [
-              Icon(Icons.info_outline_rounded,
-                  size: 18, color: AppTheme.blue),
-              SizedBox(width: 10),
+              Icon(Icons.info_outline_rounded, size: 18, color: AppTheme.blue),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Your friend must start sharing and select you '
-                  'before you can connect.',
+                  'Your friend must start sharing and select you before you can connect.',
                   style: TextStyle(fontSize: 12, color: AppTheme.blue),
                 ),
               ),
@@ -437,11 +387,9 @@ class _BuyerTab extends StatelessWidget {
               padding: const EdgeInsets.all(24),
               child: Column(
                 children: [
-                  const Icon(Icons.people_outline_rounded,
-                      size: 48, color: AppTheme.textTertiary),
+                  Icon(Icons.people_outline_rounded, size: 48, color: AppTheme.textTertiary),
                   const SizedBox(height: 12),
-                  Text('No friends yet',
-                      style: Theme.of(context).textTheme.titleMedium),
+                  Text('No friends yet', style: Theme.of(context).textTheme.titleMedium),
                 ],
               ),
             ),
@@ -458,11 +406,8 @@ class _BuyerTab extends StatelessWidget {
                     ListTile(
                       leading: FriendAvatar(friend: friend),
                       title: Text(friend.name,
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleMedium
-                              ?.copyWith(fontSize: 14)),
-                      subtitle: Text('${friend.carrier} · ${friend.city}'.trim(),
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 14)),
+                      subtitle: Text('${friend.carrier} · ${friend.city}',
                           style: Theme.of(context).textTheme.bodyMedium),
                       trailing: ElevatedButton(
                         onPressed: session.isLoading
@@ -474,10 +419,9 @@ class _BuyerTab extends StatelessWidget {
                         ),
                         child: const Text('Connect'),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 4),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                     ),
-                    if (!isLast) const RowDivider(),
+                    if (!isLast) RowDivider(),
                   ],
                 );
               }).toList(),
@@ -486,18 +430,13 @@ class _BuyerTab extends StatelessWidget {
         if (session.error != null)
           Padding(
             padding: const EdgeInsets.only(top: 12),
-            child: Text(session.error!,
-                style: const TextStyle(color: AppTheme.sent, fontSize: 13)),
+            child: Text(session.error!, style: TextStyle(color: AppTheme.sent, fontSize: 13)),
           ),
         const SizedBox(height: 24),
       ],
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────
-// ACTIVE SESSION VIEW
-// ─────────────────────────────────────────────────────────────
 
 class _ActiveSessionView extends StatelessWidget {
   final SessionRole role;
@@ -543,49 +482,34 @@ class _ActiveSessionView extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              role == SessionRole.seller
-                  ? 'Sharing Data'
-                  : "Using Friend's Data",
+              role == SessionRole.seller ? 'Sharing Data' : "Using Friend's Data",
               style: Theme.of(context).textTheme.displayLarge,
             ),
             const SizedBox(height: 20),
-
-            // Status + usage card
             SurfaceCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Status dot
                   Row(
                     children: [
                       Container(
                         width: 10,
                         height: 10,
-                        decoration: BoxDecoration(
-                          color: statusColor,
-                          shape: BoxShape.circle,
-                        ),
+                        decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        statusLabel,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          color: statusColor,
-                        ),
-                      ),
+                      Text(statusLabel,
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w500, color: statusColor)),
                     ],
                   ),
                   const SizedBox(height: 16),
-
-                  // Used / Limit
                   Row(
                     children: [
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const SectionLabel('Data used'),
+                          SectionLabel('Data used'),
                           AmountLabel(gb: usedGb, fontSize: 32),
                         ],
                       ),
@@ -593,37 +517,30 @@ class _ActiveSessionView extends StatelessWidget {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          const SectionLabel('Limit'),
+                          SectionLabel('Limit'),
                           AmountLabel(gb: limitGb, fontSize: 32),
                         ],
                       ),
                     ],
                   ),
                   const SizedBox(height: 12),
-
-                  // Progress bar
                   ClipRRect(
                     borderRadius: BorderRadius.circular(4),
                     child: LinearProgressIndicator(
                       value: usagePercent,
                       backgroundColor: AppTheme.border,
                       valueColor: AlwaysStoppedAnimation(
-                        usagePercent > 0.9 ? AppTheme.sent : AppTheme.primary,
-                      ),
+                          usagePercent > 0.9 ? AppTheme.sent : AppTheme.primary),
                       minHeight: 6,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Text(
-                    '${(usagePercent * 100).toStringAsFixed(1)}% used',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
+                  Text('${(usagePercent * 100).toStringAsFixed(1)}% used',
+                      style: Theme.of(context).textTheme.bodyMedium),
                 ],
               ),
             ),
             const SizedBox(height: 16),
-
-            // Upload / Download
             Row(
               children: [
                 Expanded(
@@ -631,7 +548,7 @@ class _ActiveSessionView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const SectionLabel('Upload'),
+                        SectionLabel('Upload'),
                         Text(_formatBytes(uploadBytes),
                             style: Theme.of(context).textTheme.titleMedium),
                       ],
@@ -644,7 +561,7 @@ class _ActiveSessionView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const SectionLabel('Download'),
+                        SectionLabel('Download'),
                         Text(_formatBytes(downloadBytes),
                             style: Theme.of(context).textTheme.titleMedium),
                       ],
@@ -653,10 +570,7 @@ class _ActiveSessionView extends StatelessWidget {
                 ),
               ],
             ),
-
             const SizedBox(height: 40),
-
-            // Stop button
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
@@ -664,25 +578,18 @@ class _ActiveSessionView extends StatelessWidget {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.sent,
                   minimumSize: const Size(double.infinity, 52),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
                 child: isLoading
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white),
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                       )
                     : Text(
-                        role == SessionRole.seller
-                            ? 'Stop sharing'
-                            : 'Disconnect',
+                        role == SessionRole.seller ? 'Stop sharing' : 'Disconnect',
                         style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                        ),
+                            color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
                       ),
               ),
             ),
@@ -693,18 +600,11 @@ class _ActiveSessionView extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// SELECTED FRIEND CARD
-// ─────────────────────────────────────────────────────────────
-
 class _SelectedFriendCard extends StatelessWidget {
   final Friend friend;
   final VoidCallback onClear;
 
-  const _SelectedFriendCard({
-    required this.friend,
-    required this.onClear,
-  });
+  const _SelectedFriendCard({required this.friend, required this.onClear});
 
   @override
   Widget build(BuildContext context) {
@@ -717,12 +617,9 @@ class _SelectedFriendCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(friend.name,
-                    style: Theme.of(context).textTheme.titleMedium),
-                Text(
-                  '${friend.carrier} · ${friend.city}, ${friend.country}'.trim(),
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
+                Text(friend.name, style: Theme.of(context).textTheme.titleMedium),
+                Text('${friend.carrier} · ${friend.city}, ${friend.country}',
+                    style: Theme.of(context).textTheme.bodyMedium),
               ],
             ),
           ),
@@ -730,12 +627,8 @@ class _SelectedFriendCard extends StatelessWidget {
             onTap: onClear,
             child: Container(
               padding: const EdgeInsets.all(6),
-              decoration: const BoxDecoration(
-                color: AppTheme.border,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.close_rounded,
-                  size: 14, color: AppTheme.textSecondary),
+              decoration: BoxDecoration(color: AppTheme.border, shape: BoxShape.circle),
+              child: const Icon(Icons.close_rounded, size: 14, color: AppTheme.textSecondary),
             ),
           ),
         ],
@@ -743,10 +636,6 @@ class _SelectedFriendCard extends StatelessWidget {
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────
-// CIRCLE BUTTON
-// ─────────────────────────────────────────────────────────────
 
 class _CircleBtn extends StatelessWidget {
   final IconData icon;

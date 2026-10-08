@@ -1,0 +1,52 @@
+{
+  "log": { "loglevel": "info" },
+  "reverse": {
+    "portals": [
+      { "tag": "portal", "domain": "seller.databric.test" }
+    ]
+  },
+  "inbounds": [
+    {
+      "tag": "buyer-in",
+      "listen": "127.0.0.1",
+      "port": 8443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "b0a1c2d3-1111-4aaa-8bbb-000000000001", "email": "buyer@static-test" }
+        ],
+        "decryption": "none"
+      }
+    },
+    {
+      "tag": "seller-in",
+      "listen": "127.0.0.1",
+      "port": 9443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "5e11e200-2222-4ccc-8ddd-000000000002", "email": "seller@static-test" }
+        ],
+        "decryption": "none"
+      }
+    }
+  ],
+  "outbounds": [
+    { "tag": "blocked", "protocol": "blackhole" }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["seller-in"],
+        "domain": ["full:seller.databric.test"],
+        "outboundTag": "portal"
+      },
+      {
+        "type": "field",
+        "inboundTag": ["buyer-in"],
+        "outboundTag": "portal"
+      }
+    ]
+  }
+}

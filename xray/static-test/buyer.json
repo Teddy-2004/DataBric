@@ -1,0 +1,29 @@
+{
+  "log": { "loglevel": "info" },
+  "inbounds": [
+    {
+      "tag": "socks",
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "protocol": "socks",
+      "settings": { "udp": false }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "to-relay",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "127.0.0.1",
+            "port": 8443,
+            "users": [
+              { "id": "b0a1c2d3-1111-4aaa-8bbb-000000000001", "encryption": "none" }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
