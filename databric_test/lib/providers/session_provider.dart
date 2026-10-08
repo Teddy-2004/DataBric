@@ -53,15 +53,23 @@ double get limitGb {
     notifyListeners();
 
     try {
-      // 1. Ask backend to create session and get VLESS URI
+      // 1. Ask backend to create the session. It returns the full Xray config
+      //    that connects this phone to the relay as the session's bridge.
       final data = await apiService.startSharing(limitGb, receiverId: receiverId);
-      final vlessUri = data['vless_uri'] as String;
       final sessionId = data['session_id'] as String;
+      // Older backends only send vless_uri; startAsSeller treats that as a
+      // placeholder session with no tunnel.
+      final sellerConfig =
+          (data['seller_config'] ?? data['vless_uri']) as String;
 
       // 2. Start Xray-core in seller mode
-      final started = await xrayService.startAsSeller(vlessUri, sessionId);
+      final started = await xrayService.startAsSeller(sellerConfig, sessionId);
       if (!started) {
-        _error = 'Failed to start tunnel. Check permissions.';
+        _error = xrayService.errorMessage ?? 'Failed to start tunnel.';
+        // Don't leave a session the phone can't serve.
+        try {
+          await apiService.stopSharing();
+        } catch (_) {}
         return false;
       }
 

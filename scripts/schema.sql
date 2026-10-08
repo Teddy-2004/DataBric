@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     region              TEXT NOT NULL,           -- country code e.g. "KE"
     city                TEXT NOT NULL,
     public_key          TEXT NOT NULL DEFAULT '', -- VLESS Reality public key
+    short_id            TEXT NOT NULL DEFAULT '', -- Reality short id in the relay's config
+    server_name         TEXT NOT NULL DEFAULT 'www.google.com', -- Reality SNI
+    seller_port         INTEGER NOT NULL DEFAULT 9443,
+    portal_slots        INTEGER NOT NULL DEFAULT 0, -- seller slots (reverse portals) in the relay's config
     status              TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active', 'blocked', 'retired')),
     active_sessions     INTEGER DEFAULT 0,
@@ -77,8 +81,12 @@ CREATE TABLE IF NOT EXISTS sharing_sessions (
     buyer_id        UUID REFERENCES users(id),
     relay_node_id   UUID REFERENCES relay_nodes(id),
 
+    receiver_id     UUID REFERENCES users(id),  -- only this friend may connect, if set
+
     -- VLESS Reality session credentials
-    vless_uuid      TEXT NOT NULL,
+    vless_uuid      TEXT NOT NULL,              -- buyer's
+    seller_uuid     TEXT,                       -- seller's (reverse bridge)
+    relay_slot      INTEGER,                    -- seller slot on the relay
     short_id        TEXT NOT NULL,
 
     -- Data limits
@@ -113,6 +121,7 @@ CREATE INDEX idx_sessions_buyer ON sharing_sessions(buyer_id);
 CREATE INDEX idx_sessions_status ON sharing_sessions(status);
 CREATE INDEX idx_sessions_active ON sharing_sessions(seller_id, status)
     WHERE status IN ('advertising', 'connected', 'transferring');
+-- (relay slot indexes are created by the migration helpers below)
 
 -- ── Usage events (granular log) ───────────────────────────────
 CREATE TABLE IF NOT EXISTS usage_events (
@@ -224,3 +233,18 @@ BEGIN
         ALTER TABLE usage_events ADD CONSTRAINT usage_events_heartbeat_id_key UNIQUE (heartbeat_id);
     END IF;
 END$$;
+
+-- Relay seller slots (also in scripts/migrations/001_relay_slots.sql)
+ALTER TABLE relay_nodes ADD COLUMN IF NOT EXISTS short_id     TEXT    NOT NULL DEFAULT '';
+ALTER TABLE relay_nodes ADD COLUMN IF NOT EXISTS server_name  TEXT    NOT NULL DEFAULT 'www.google.com';
+ALTER TABLE relay_nodes ADD COLUMN IF NOT EXISTS seller_port  INTEGER NOT NULL DEFAULT 9443;
+ALTER TABLE relay_nodes ADD COLUMN IF NOT EXISTS portal_slots INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sharing_sessions ADD COLUMN IF NOT EXISTS seller_uuid TEXT;
+ALTER TABLE sharing_sessions ADD COLUMN IF NOT EXISTS relay_slot  INTEGER;
+ALTER TABLE sharing_sessions ADD COLUMN IF NOT EXISTS receiver_id UUID REFERENCES users(id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_live_slot
+    ON sharing_sessions (relay_node_id, relay_slot)
+    WHERE status IN ('advertising', 'connected', 'transferring')
+      AND relay_slot IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_node_slot
+    ON sharing_sessions (relay_node_id, relay_slot);

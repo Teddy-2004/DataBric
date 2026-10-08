@@ -39,9 +39,13 @@ enum TunnelStatus { idle, connecting, connected, error }
 /// process, which Android keeps alive. The seller would keep sharing. So every
 /// stop also ends that process (MainActivity.kt, channel databric/tunnel_process).
 ///
+/// The backend's /sessions/start returns the bridge config (seller_config);
+/// see app/services/xray_configs.py.
+///
 /// Still to do:
-///   - backend returns a per-session bridge config instead of a VLESS URI
 ///   - seller tunnel survives the app being backgrounded for long periods
+///   - after an app restart, a still-active seller session has no tunnel
+///     (the config is only sent once, at start)
 class XrayService extends ChangeNotifier {
   XrayMode _mode = XrayMode.idle;
   TunnelStatus _status = TunnelStatus.idle;
@@ -168,9 +172,9 @@ class XrayService extends ChangeNotifier {
       return false;
     }
 
-    // The backend still hands sellers a VLESS URI, which cannot describe a
-    // bridge. Until it returns a bridge config, the normal share flow keeps
-    // its placeholder behaviour: the UI shows a session, no tunnel runs.
+    // Backends older than seller_config hand sellers a VLESS URI, which
+    // cannot describe a bridge: keep the placeholder behaviour for those
+    // (the UI shows a session, no tunnel runs).
     if (sellerConfig.trimLeft().startsWith('vless://')) {
       debugPrint('[XrayService] startAsSeller: got a VLESS URI, not a bridge '
           'config. PLACEHOLDER ONLY, no tunnel started.');
