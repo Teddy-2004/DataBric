@@ -218,10 +218,14 @@ class UsageHeartbeat(BaseModel):
 class RelayNodeRegister(BaseModel):
     node_id: str
     host: str
-    port: int
+    port: int                         # buyer port
     region: str
     city: str
     public_key: Optional[str] = ""
+    short_id: Optional[str] = ""      # Reality short id from the relay's config
+    server_name: Optional[str] = "www.google.com"
+    seller_port: int = 9443
+    portal_slots: int = 0             # seller slots in the relay's Xray config
 
 
 class NodeHealthPing(BaseModel):

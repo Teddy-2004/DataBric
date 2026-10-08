@@ -8,7 +8,7 @@ from app.core.security import get_current_user
 from app.services.relay_service import (
     get_best_relay_node, create_session,
     connect_buyer_to_session, terminate_session,
-    get_active_session_for_seller
+    get_active_session_for_seller, RelayFullError,
 )
 from app.services.notification_service import (
     notify_connection_request, notify_session_started,
@@ -73,8 +73,10 @@ async def start_sharing(
 ):
     """
     Seller calls this to start sharing their data.
-    Returns a VLESS+Reality URI that the Flutter app loads
-    into Xray-core to open the listening tunnel.
+
+    Returns `seller_config`: the full Xray config the app runs to connect the
+    seller's phone to the relay as this session's reverse-proxy bridge. The
+    relay agent picks the session up within a few seconds.
     """
     # Check no active session already running
     existing = await get_active_session_for_seller(current_user["id"])
@@ -99,21 +101,30 @@ async def start_sharing(
             detail="No relay nodes available right now. Try again in a moment."
         )
 
-    session = await create_session(
-        seller_id=current_user["id"],
-        limit_gb=body.limit_gb,
-        relay_node=relay,
-        receiver_id=body.receiver_id,
-    )
+    try:
+        session = await create_session(
+            seller_id=current_user["id"],
+            limit_gb=body.limit_gb,
+            relay_node=relay,
+            receiver_id=body.receiver_id,
+        )
+    except RelayFullError:
+        raise HTTPException(
+            status_code=503,
+            detail="All sharing slots are busy right now. Try again in a moment."
+        )
 
     logger.info(
         f"Sharing started: seller={current_user['id']} "
         f"limit={body.limit_gb}GB relay={relay['host']}"
     )
 
-    # Seller does need the VLESS URI here (one-time response, not /active).
+    # One-time response, not repeated by /active: it contains credentials.
     return {
         "session_id": str(session["id"]),
+        "seller_config": session["seller_config"],
+        # Kept only for app builds older than seller_config, which read it and
+        # ran a placeholder. Remove once those builds are gone.
         "vless_uri": session["vless_uri"],
         "relay_host": relay["host"],
         "relay_port": relay["port"],
@@ -206,6 +217,7 @@ async def connect_to_session(
         port=session["port"],
         public_key=session["public_key"],
         short_id=session["short_id"],
+        server_name=session.get("server_name") or "www.google.com",
     )
 
     return ConnectResponse(

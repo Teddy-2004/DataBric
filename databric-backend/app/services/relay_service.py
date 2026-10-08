@@ -3,9 +3,16 @@ import json
 import secrets
 import logging
 import httpx
+import asyncpg
 from datetime import datetime
 from app.core.database import fetch, fetchrow, execute, fetchval, get_pool
 from app.core.config import settings
+from app.services.xray_configs import generate_seller_bridge_config
+
+
+
+class RelayFullError(Exception):
+    """No free seller slot on the chosen relay."""
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +64,19 @@ async def get_best_relay_node(region: str = None) -> dict | None:
     Prefers same region as seller if specified.
     Falls back to any active node.
     """
+    # Usable = set up by the relay agent (has seller slots and a Reality short
+    # id) and heard from recently (the agent heartbeats every 30 s).
+    usable = """
+        status = 'active'
+        AND portal_slots > 0
+        AND short_id <> ''
+        AND last_health_check > NOW() - INTERVAL '2 minutes'
+    """
     if region:
         node = await fetchrow(
-            """
+            f"""
             SELECT * FROM relay_nodes
-            WHERE status = 'active'
+            WHERE {usable}
             AND region = $1
             ORDER BY active_sessions ASC, last_health_check DESC
             LIMIT 1
@@ -71,11 +86,11 @@ async def get_best_relay_node(region: str = None) -> dict | None:
         if node:
             return dict(node)
 
-    # Fallback: any active node with lowest load
+    # Fallback: any usable node with lowest load
     node = await fetchrow(
-        """
+        f"""
         SELECT * FROM relay_nodes
-        WHERE status = 'active'
+        WHERE {usable}
         ORDER BY active_sessions ASC, last_health_check DESC
         LIMIT 1
         """
@@ -90,24 +105,39 @@ async def register_relay_node(
     region: str,
     city: str,
     public_key: str,
+    short_id: str = "",
+    server_name: str = "www.google.com",
+    seller_port: int = 9443,
+    portal_slots: int = 0,
 ) -> uuid.UUID:
     """
     Register or update a relay node in the database.
-    Called by relay nodes on startup.
+    Called by the relay agent on startup. Everything is refreshed on
+    re-register, so a relay that regenerated its keys is picked up.
     """
     result = await fetchrow(
         """
-        INSERT INTO relay_nodes (node_id, host, port, region, city, public_key, status, active_sessions, last_health_check)
-        VALUES ($1, $2, $3, $4, $5, $6, 'active', 0, NOW())
+        INSERT INTO relay_nodes (node_id, host, port, region, city, public_key,
+                                 short_id, server_name, seller_port, portal_slots,
+                                 status, active_sessions, last_health_check)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', 0, NOW())
         ON CONFLICT (node_id)
         DO UPDATE SET
             host = EXCLUDED.host,
             port = EXCLUDED.port,
+            region = EXCLUDED.region,
+            city = EXCLUDED.city,
+            public_key = EXCLUDED.public_key,
+            short_id = EXCLUDED.short_id,
+            server_name = EXCLUDED.server_name,
+            seller_port = EXCLUDED.seller_port,
+            portal_slots = EXCLUDED.portal_slots,
             status = 'active',
             last_health_check = NOW()
         RETURNING id
         """,
-        node_id, host, port, region, city, public_key
+        node_id, host, port, region, city, public_key,
+        short_id, server_name, seller_port, portal_slots,
     )
     return result["id"]
 
@@ -150,6 +180,37 @@ async def mark_node_blocked(node_id: str, carrier: str):
 
 # ── Session management ─────────────────────────────────────────
 
+async def _pick_free_slot(relay_node: dict) -> int | None:
+    """
+    A seller slot on this relay that no live session holds, least recently
+    used first. Spreading reuse out gives an ended seller's connection the
+    longest possible time to be gone before the slot is handed on (the relay
+    agent also cuts it when the session ends).
+    """
+    row = await fetchrow(
+        """
+        SELECT s.slot
+        FROM generate_series(0, $2::int - 1) AS s(slot)
+        LEFT JOIN (
+            SELECT relay_slot, MAX(COALESCE(ended_at, started_at)) AS last_used
+            FROM sharing_sessions
+            WHERE relay_node_id = $1 AND relay_slot IS NOT NULL
+            GROUP BY relay_slot
+        ) u ON u.relay_slot = s.slot
+        WHERE NOT EXISTS (
+            SELECT 1 FROM sharing_sessions x
+            WHERE x.relay_node_id = $1
+              AND x.relay_slot = s.slot
+              AND x.status IN ('advertising', 'connected', 'transferring')
+        )
+        ORDER BY u.last_used NULLS FIRST, s.slot
+        LIMIT 1
+        """,
+        relay_node["id"], relay_node.get("portal_slots") or 0,
+    )
+    return row["slot"] if row else None
+
+
 async def create_session(
     seller_id: uuid.UUID,
     limit_gb: float,
@@ -157,41 +218,74 @@ async def create_session(
     receiver_id: uuid.UUID | None = None,
 ) -> dict:
     """
-    Create a new sharing session in ADVERTISING state.
-    Returns session record with VLESS URI.
+    Create a new sharing session in ADVERTISING state on a free relay slot.
+
+    Returns the session row plus:
+      - seller_config: full Xray config for the seller's phone (reverse bridge)
+      - vless_uri: the buyer's connection link (same one /sessions/connect returns)
+
+    Raises RelayFullError if the relay has no free slot.
     """
     limit_bytes = int(limit_gb * 1024 * 1024 * 1024)
 
-    # Generate unique VLESS user UUID for this session
+    # Fresh credentials per session: the buyer's (vless_uuid) and the seller's.
     vless_uuid = str(uuid.uuid4())
-    short_id = secrets.token_hex(4)  # 8-char hex
+    seller_uuid = str(uuid.uuid4())
+    # Reality short ids are fixed in the relay's config, so use the relay's.
+    short_id = relay_node["short_id"]
 
-    session = await fetchrow(
-        """
-        INSERT INTO sharing_sessions
-            (seller_id, buyer_id, relay_node_id, limit_bytes, used_bytes, 
-            status, vless_uuid, short_id, receiver_id, started_at)
-        VALUES ($1, $2, $3, $4, 0, 'advertising', $5, $6, $7, NOW())
-        RETURNING *
-        """,
-        seller_id,
-        None,
-        relay_node["id"],
-        limit_bytes,
-        vless_uuid,
-        short_id,
-        receiver_id,  # new
-    )
+    session = None
+    for attempt in range(3):
+        slot = await _pick_free_slot(relay_node)
+        if slot is None:
+            raise RelayFullError("No free sharing slot on this relay")
+        try:
+            session = await fetchrow(
+                """
+                INSERT INTO sharing_sessions
+                    (seller_id, buyer_id, relay_node_id, limit_bytes, used_bytes,
+                    status, vless_uuid, seller_uuid, relay_slot, short_id,
+                    receiver_id, started_at)
+                VALUES ($1, $2, $3, $4, 0, 'advertising', $5, $6, $7, $8, $9, NOW())
+                RETURNING *
+                """,
+                seller_id,
+                None,
+                relay_node["id"],
+                limit_bytes,
+                vless_uuid,
+                seller_uuid,
+                slot,
+                short_id,
+                receiver_id,
+            )
+            break
+        except asyncpg.exceptions.UniqueViolationError:
+            # Another session took this slot between the pick and the insert.
+            continue
+    if session is None:
+        raise RelayFullError("Relay slots are busy")
 
+    server_name = relay_node.get("server_name") or "www.google.com"
     vless_uri = generate_vless_reality_uri(
         user_uuid=vless_uuid,
         host=relay_node["host"],
         port=relay_node["port"],
         public_key=relay_node["public_key"],
         short_id=short_id,
+        server_name=server_name,
+    )
+    seller_config = generate_seller_bridge_config(
+        relay_host=relay_node["host"],
+        seller_port=relay_node["seller_port"],
+        seller_uuid=seller_uuid,
+        slot=slot,
+        public_key=relay_node["public_key"],
+        short_id=short_id,
+        server_name=server_name,
     )
 
-    return {**dict(session), "vless_uri": vless_uri}
+    return {**dict(session), "vless_uri": vless_uri, "seller_config": seller_config}
 
 
 async def connect_buyer_to_session(
@@ -334,7 +428,7 @@ async def terminate_session(
 async def get_active_session_for_seller(seller_id: uuid.UUID) -> dict | None:
     row = await fetchrow(
         """
-        SELECT s.*, rn.host, rn.port, rn.public_key
+        SELECT s.*, rn.host, rn.port, rn.public_key, rn.server_name, rn.seller_port
         FROM sharing_sessions s
         JOIN relay_nodes rn ON rn.id = s.relay_node_id
         WHERE s.seller_id = $1
@@ -345,3 +439,33 @@ async def get_active_session_for_seller(seller_id: uuid.UUID) -> dict | None:
         seller_id
     )
     return dict(row) if row else None
+
+
+async def get_live_sessions_for_node(node_id: str) -> list[dict]:
+    """
+    Sessions the relay agent on `node_id` should have live in Xray.
+    Contains credentials: only for the relay-secret endpoint.
+    """
+    rows = await fetch(
+        """
+        SELECT s.id, s.relay_slot, s.seller_uuid, s.vless_uuid, s.status
+        FROM sharing_sessions s
+        JOIN relay_nodes rn ON rn.id = s.relay_node_id
+        WHERE rn.node_id = $1
+          AND s.status IN ('advertising', 'connected', 'transferring')
+          AND s.relay_slot IS NOT NULL
+          AND s.seller_uuid IS NOT NULL
+        ORDER BY s.started_at
+        """,
+        node_id,
+    )
+    return [
+        {
+            "session_id": str(r["id"]),
+            "slot": r["relay_slot"],
+            "seller_uuid": r["seller_uuid"],
+            "buyer_uuid": r["vless_uuid"],
+            "status": r["status"],
+        }
+        for r in rows
+    ]

@@ -4,7 +4,8 @@ from app.models.schemas import (
 )
 from app.services.relay_service import (
     register_relay_node, update_node_health,
-    process_usage_heartbeat, mark_node_blocked
+    process_usage_heartbeat, mark_node_blocked,
+    get_live_sessions_for_node,
 )
 from app.services.notification_service import (
     notify_usage_warning, notify_session_ended
@@ -32,7 +33,8 @@ async def relay_register(
 ):
     """
     Called by a relay node when it starts up.
-    Registers the node's host, port, region, and VLESS Reality public key.
+    Registers the node's host, ports, region, Reality key and short id, and
+    how many seller slots its Xray config defines.
     """
     _require_relay(x_relay_secret)
 
@@ -43,10 +45,28 @@ async def relay_register(
         region=body.region,
         city=body.city,
         public_key=body.public_key or "",
+        short_id=body.short_id or "",
+        server_name=body.server_name or "www.google.com",
+        seller_port=body.seller_port,
+        portal_slots=body.portal_slots,
     )
 
     logger.info(f"Relay node registered: {body.node_id} @ {body.host}:{body.port}")
     return APIResponse(message="Node registered", data={"db_id": str(node_db_id)})
+
+
+@router.get("/sessions", response_model=dict)
+async def relay_live_sessions(
+    node_id: str,
+    x_relay_secret: str | None = Header(default=None, alias="X-Relay-Secret"),
+):
+    """
+    Polled by the relay agent every few seconds: the sessions that should be
+    live on this node, with the seller and buyer credentials and slot for
+    each. The agent adds what is new and removes what has ended.
+    """
+    _require_relay(x_relay_secret)
+    return {"sessions": await get_live_sessions_for_node(node_id)}
 
 
 @router.post("/heartbeat", response_model=APIResponse)
