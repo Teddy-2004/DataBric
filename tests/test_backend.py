@@ -290,15 +290,19 @@ def test_rate_limit_cannot_be_dodged_with_forged_headers():
         return {"ok": True}
 
     c = TestClient(mini)
-    real = "198.51.100.7"  # what the proxy appends every time
+    # Render's three proxies: the first appends the real client address,
+    # the other two their own internal ones.
+    render = "172.70.1.1, 10.24.242.28"
+    real = "198.51.100.7"
     codes = [
-        c.get("/ping", headers={"X-Forwarded-For": f"10.0.0.{i}, {real}"}).status_code
+        c.get("/ping", headers={"X-Forwarded-For": f"10.0.0.{i}, {real}, {render}"}).status_code
         for i in range(7)
     ]
     assert codes == [200] * 5 + [429] * 2
 
     # A different real client has its own budget.
-    assert c.get("/ping", headers={"X-Forwarded-For": "198.51.100.8"}).status_code == 200
+    other = {"X-Forwarded-For": f"198.51.100.8, {render}"}
+    assert c.get("/ping", headers=other).status_code == 200
 
 
 # ── Relay seller slots and seller configs ──────────────────────
