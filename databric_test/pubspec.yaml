@@ -18,7 +18,9 @@ dependencies:
   permission_handler: ^11.3.0
   firebase_core: ^2.27.0
   firebase_messaging: ^14.7.20
-  flutter_v2ray: ^1.0.10
+  # Pinned: bundles Xray v26.9.9, the version the relays run
+  # (databric-backend/scripts/setup_relay.sh). Change both together.
+  flutter_v2ray_client: 3.5.0
 
 dev_dependencies:
   flutter_test:

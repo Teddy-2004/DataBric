@@ -41,13 +41,13 @@
             </intent-filter>
         </activity>
 
-        <!-- flutter_v2ray declares its own VPN and proxy-only services, so they
+        <!-- flutter_v2ray_client declares its own VPN and proxy-only services, so they
              are not repeated here. This entry is merged into the plugin's
              proxy-only service (used by the seller) and adds the foreground
              service type the plugin leaves out. Android 14+ refuses to keep
              the service running without one. -->
         <service
-            android:name="com.github.blueboytm.flutter_v2ray.v2ray.services.V2rayProxyOnlyService"
+            android:name="dev.amirzr.flutter_v2ray_client.v2ray.services.V2rayProxyOnlyService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property

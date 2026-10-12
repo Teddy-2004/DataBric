@@ -18,18 +18,17 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "endTunnelProcess" -> result.success(endTunnelProcess())
                     "isTunnelProcessAlive" -> result.success(tunnelPids().isNotEmpty())
-                    "packageName" -> result.success(packageName)
                     else -> result.notImplemented()
                 }
             }
     }
 
-    // flutter_v2ray runs the Xray core in this separate process.
+    // flutter_v2ray_client runs the Xray core in this separate process.
     private val tunnelProcessName: String get() = "$packageName:RunSoLibV2RayDaemon"
 
     private val pluginServices = listOf(
-        "com.github.blueboytm.flutter_v2ray.v2ray.services.V2rayProxyOnlyService",
-        "com.github.blueboytm.flutter_v2ray.v2ray.services.V2rayVPNService",
+        "dev.amirzr.flutter_v2ray_client.v2ray.services.V2rayProxyOnlyService",
+        "dev.amirzr.flutter_v2ray_client.v2ray.services.V2rayVPNService",
     )
 
     /**

@@ -1,8 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_v2ray/flutter_v2ray.dart';
+import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 enum XrayMode { buyer, seller, idle }
@@ -13,31 +14,31 @@ enum TunnelStatus { idle, connecting, connected, error }
 ///
 /// BUYER side: standard VLESS client.
 ///   connectAsBuyer(vlessUri, sessionId) parses the URI and opens an Android
-///   VPN TUN interface, so all device traffic goes relay -> seller -> internet.
+///   VPN, so all device traffic goes relay -> seller -> internet.
 ///
-/// SELLER side: Xray reverse proxy, "Option B".
-///   The seller phone is the BRIDGE. It dials OUT to the relay, which is the
-///   PORTAL, and the relay sends buyer traffic back down that connection.
-///   The phone never accepts an inbound connection, so this works behind
-///   carrier NAT.
+/// SELLER side: Xray's VLESS Reverse Proxy.
+///   The seller phone dials OUT to the relay, and the relay sends buyer
+///   traffic back down that connection. The phone never accepts an inbound
+///   connection, so this works behind carrier NAT.
 ///
-///     buyer -> relay (portal) -> seller phone (bridge) -> carrier network
+///     buyer -> relay -> seller phone -> carrier network
 ///
 ///   startAsSeller(configJson, sessionId) runs a full Xray JSON config in
 ///   proxy-only mode (no VPN interface; the seller's own traffic is untouched).
 ///
-/// What flutter_v2ray 1.0.10 requires of a custom config (it fails silently
-/// otherwise):
+/// What flutter_v2ray_client 3.5.0 requires of a custom config (it fails
+/// silently otherwise):
 ///   - an "inbounds" array must be present
-///   - outbounds[0] must be the VLESS outbound with settings.vnext[0]
-///   - tag that outbound "proxy" for the upload/download counters to work
+///   - outbounds[0].settings must have vnext[0] or servers[0] with an address
+///   - tag the tunnel outbound "proxy" for the upload/download counters
 ///
-/// The bundled core is Xray v25.3.6. Run the same version on the relay.
+/// The bundled core is Xray v26.9.9. Run the same version on the relay.
+/// The plugin's native code is built for 16 KB memory pages.
 ///
-/// Stopping: flutter_v2ray's stop closes the core, but for a reverse bridge
-/// that leaves the open connection to the relay running inside the core's
-/// process, which Android keeps alive. The seller would keep sharing. So every
-/// stop also ends that process (MainActivity.kt, channel databric/tunnel_process).
+/// Stopping: with the previous plugin, stopping the core left the reverse
+/// tunnel's connection open inside the core's process, which Android keeps
+/// alive, so the seller kept sharing. Every stop still ends that process
+/// (MainActivity.kt, channel databric/tunnel_process) so that can't recur.
 ///
 /// The backend's /sessions/start returns the bridge config (seller_config);
 /// see app/services/xray_configs.py.
@@ -58,11 +59,6 @@ class XrayService extends ChangeNotifier {
   /// Last state reported by the native core: CONNECTING, CONNECTED, DISCONNECTED.
   String? _coreState;
 
-  /// flutter_v2ray never switches back from proxy-only to VPN mode within one
-  /// app process. Once the seller has run, a buyer connection would start
-  /// without a VPN interface and silently tunnel nothing.
-  bool _proxyOnlyLatched = false;
-
   /// True while stopTunnel() runs, so its own DISCONNECTED event is not
   /// mistaken for a stop from outside the app.
   bool _stopping = false;
@@ -70,7 +66,7 @@ class XrayService extends ChangeNotifier {
   static const MethodChannel _tunnelProcess =
       MethodChannel('databric/tunnel_process');
 
-  late final FlutterV2ray _v2ray = FlutterV2ray(
+  late final V2ray _v2ray = V2ray(
     onStatusChanged: (V2RayStatus s) {
       _coreState = s.state;
       // Running totals for the session, in bytes.
@@ -105,26 +101,19 @@ class XrayService extends ChangeNotifier {
   bool get isActive => _status == TunnelStatus.connected;
 
   Future<void> init() async {
-    await _v2ray.initializeV2Ray(
+    await _v2ray.initialize(
       notificationIconResourceType: 'mipmap',
       notificationIconResourceName: 'ic_launcher',
     );
-    debugPrint('[XrayService] flutter_v2ray initialized');
+    debugPrint('[XrayService] flutter_v2ray_client initialized');
   }
 
   // ── BUYER SIDE ──────────────────────────────────────────────────────────────
 
   /// Connect as buyer using a VLESS URI returned by the backend.
   /// The URI encodes relay address, port, session UUID, and Reality params.
-  /// flutter_v2ray parses it and creates a VPN TUN interface.
+  /// flutter_v2ray_client parses it and creates a VPN interface.
   Future<bool> connectAsBuyer(String vlessUri, String sessionId) async {
-    if (_proxyOnlyLatched) {
-      _setError(
-        'This phone shared data earlier in this app session. '
-        'Close and reopen the app before using a friend\'s data.',
-      );
-      return false;
-    }
     try {
       debugPrint('[XrayService] connectAsBuyer: $sessionId');
       _mode = XrayMode.buyer;
@@ -141,20 +130,15 @@ class XrayService extends ChangeNotifier {
       }
 
       // Parse the VLESS URI into a V2RayURL object.
-      final v2rayUrl = FlutterV2ray.parseFromURL(vlessUri);
+      final v2rayUrl = V2ray.parseFromURL(vlessUri);
 
-      // Keep DataBric itself out of the VPN: its calls to the backend
-      // (disconnect, "has the session ended?") must work even when the
-      // tunnel doesn't. The core shares this app's identity, and its own
-      // connection to the relay must bypass the VPN anyway.
-      final ownPackage =
-          await _tunnelProcess.invokeMethod<String>('packageName');
-
-      // Start the VPN service with the parsed config.
+      // Start the VPN service with the parsed config. The plugin keeps
+      // DataBric itself out of the VPN, so its calls to the backend
+      // (disconnect, "has the session ended?") work even when the tunnel
+      // doesn't.
       await _v2ray.startV2Ray(
         remark: 'DataBric session $sessionId',
         config: v2rayUrl.getFullConfiguration(),
-        blockedApps: ownPackage == null ? null : [ownPackage],
         proxyOnly: false, // use full VPN mode
       );
 
@@ -213,10 +197,9 @@ class XrayService extends ChangeNotifier {
         return false;
       }
 
-      _proxyOnlyLatched = true;
       await _v2ray.startV2Ray(
         remark: 'DataBric sharing $sessionId',
-        config: sellerConfig,
+        config: kDebugMode ? _withInfoLogging(sellerConfig) : sellerConfig,
         proxyOnly: true,
       );
 
@@ -237,6 +220,18 @@ class XrayService extends ChangeNotifier {
     } catch (e) {
       _setError('Tunnel error: $e');
       return false;
+    }
+  }
+
+  /// Debug builds log every connection's fate (adb logcat, tag GoLog), so a
+  /// failing outbound shows why. Release builds keep the backend's level.
+  static String _withInfoLogging(String config) {
+    try {
+      final json = jsonDecode(config) as Map<String, dynamic>;
+      json['log'] = {...?(json['log'] as Map<String, dynamic>?), 'loglevel': 'info'};
+      return jsonEncode(json);
+    } catch (_) {
+      return config;
     }
   }
 
