@@ -32,7 +32,8 @@ fi
 
 # Anything else on these ports takes the emulators' connections instead of
 # the container (e.g. the static tunnel test's relay on 127.0.0.1).
-OTHERS=$(lsof -nP -iTCP:8443 -iTCP:9443 -sTCP:LISTEN 2>/dev/null | awk 'NR>1 && $1 !~ /^com\.docke/ {print $1" (PID "$2")"}' | sort -u)
+# lsof exits 1 when nothing listens; that's the normal case, not an error.
+OTHERS=$( (lsof -nP -iTCP:8443 -iTCP:9443 -sTCP:LISTEN 2>/dev/null || true) | awk 'NR>1 && $1 !~ /^com\.docke/ {print $1" (PID "$2")"}' | sort -u)
 if [ -n "$OTHERS" ]; then
   echo "Another program is listening on port 8443 or 9443, so the emulators would reach it instead of this relay:"
   echo "$OTHERS" | sed 's/^/  /'
