@@ -35,7 +35,12 @@
     },
     {
       "tag": "direct",
-      "protocol": "freedom"
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "UseIPv4v6"
+        }
+      }
     },
     {
       "tag": "block",
@@ -45,6 +50,13 @@
   "routing": {
     "domainStrategy": "IPOnDemand",
     "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns-query"
+        ],
+        "outboundTag": "direct"
+      },
       {
         "type": "field",
         "inboundTag": [
@@ -78,6 +90,13 @@
         ],
         "outboundTag": "block"
       }
+    ]
+  },
+  "dns": {
+    "tag": "dns-query",
+    "servers": [
+      "1.1.1.1",
+      "8.8.8.8"
     ]
   }
 }
