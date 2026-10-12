@@ -8,6 +8,9 @@ services:
     envVars:
       - key: APP_ENV
         value: production
+      # One Render proxy appends the client IP to X-Forwarded-For.
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
       - key: SECRET_KEY
         generateValue: true
       # ── Database ───────────────────────────────────────────────

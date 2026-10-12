@@ -251,13 +251,54 @@ def test_relay_usage_wrong_secret():
 
 
 # ── Rate limiting ──────────────────────────────────────────────
-def test_rate_limit():
-    """Hit the same endpoint 101 times — should get 429 on the 101st."""
-    for i in range(100):
-        client.get("/health")
-    # Note: health is excluded from rate limiting in our middleware
-    # This test verifies the counter logic conceptually
-    assert True  # Placeholder — test rate limit on auth endpoints in integration tests
+def _request(xff=None, peer="203.0.113.10"):
+    from starlette.requests import Request
+    headers = [] if xff is None else [(b"x-forwarded-for", xff.encode())]
+    return Request({"type": "http", "headers": headers, "client": (peer, 1234)})
+
+
+def test_client_ip_ignores_forged_forwarded_for():
+    """Behind one proxy, only the entry that proxy appended is believed."""
+    from app.middleware.logging import client_ip
+    # Client forged "1.2.3.4"; the proxy appended the real address.
+    assert client_ip(_request("1.2.3.4, 198.51.100.7"), 1) == "198.51.100.7"
+    # No forgery: the proxy's entry is the only one.
+    assert client_ip(_request("198.51.100.7"), 1) == "198.51.100.7"
+    # Two proxies: the outer one's entry, two from the right.
+    assert client_ip(_request("1.2.3.4, 198.51.100.7, 10.0.0.2"), 2) == "198.51.100.7"
+
+
+def test_client_ip_falls_back_to_the_connection():
+    from app.middleware.logging import client_ip
+    # No proxy configured: the header is ignored entirely.
+    assert client_ip(_request("1.2.3.4"), 0) == "203.0.113.10"
+    # No header, or garbage in the trusted position.
+    assert client_ip(_request(None), 1) == "203.0.113.10"
+    assert client_ip(_request("1.2.3.4, not-an-ip"), 1) == "203.0.113.10"
+
+
+def test_rate_limit_cannot_be_dodged_with_forged_headers():
+    """A client rotating forged X-Forwarded-For values still hits the limit."""
+    from fastapi import FastAPI
+    from app.middleware.logging import RateLimitMiddleware
+
+    mini = FastAPI()
+    mini.add_middleware(RateLimitMiddleware, max_requests=5, window_seconds=60)
+
+    @mini.get("/ping")
+    def ping():
+        return {"ok": True}
+
+    c = TestClient(mini)
+    real = "198.51.100.7"  # what the proxy appends every time
+    codes = [
+        c.get("/ping", headers={"X-Forwarded-For": f"10.0.0.{i}, {real}"}).status_code
+        for i in range(7)
+    ]
+    assert codes == [200] * 5 + [429] * 2
+
+    # A different real client has its own budget.
+    assert c.get("/ping", headers={"X-Forwarded-For": "198.51.100.8"}).status_code == 200
 
 
 # ── Relay seller slots and seller configs ──────────────────────

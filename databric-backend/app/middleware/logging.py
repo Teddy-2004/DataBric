@@ -1,10 +1,40 @@
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
+import ipaddress
 import time
 import logging
 import uuid
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
+
+
+def client_ip(request: Request, trusted_hops: int | None = None) -> str:
+    """
+    The caller's IP, as far as it can be trusted.
+
+    Each proxy in front of the app appends the address it received the
+    request from to X-Forwarded-For. A client can put anything it likes in
+    the header before it reaches the first proxy, so only the entries our
+    own proxies appended (the rightmost `trusted_hops`) are believed.
+    """
+    hops = settings.TRUSTED_PROXY_HOPS if trusted_hops is None else trusted_hops
+    peer = request.client.host if request.client else "unknown"
+    if hops <= 0:
+        return peer
+
+    raw = ",".join(request.headers.getlist("x-forwarded-for"))
+    chain = [h.strip() for h in raw.split(",") if h.strip()]
+    if not chain:
+        return peer
+    # Fewer entries than proxies means the header was rewritten rather than
+    # appended to; the leftmost entry is then the proxy's own value.
+    candidate = chain[max(len(chain) - hops, 0)]
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return peer
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -16,8 +46,15 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         if request.url.path == "/health":
             return await call_next(request)
 
+        # xff= is the number of X-Forwarded-For entries: it shows how many
+        # proxies the request passed through (see TRUSTED_PROXY_HOPS).
+        xff = sum(
+            1 for v in request.headers.getlist("x-forwarded-for")
+            for h in v.split(",") if h.strip()
+        )
         logger.info(
-            f"[{request_id}] {request.method} {request.url.path}"
+            f"[{request_id}] {request.method} {request.url.path} "
+            f"ip={client_ip(request)} xff={xff}"
         )
 
         response = await call_next(request)
@@ -49,12 +86,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._store: dict[str, list] = {}
         self._last_prune = time.time()
 
-    def _get_client_ip(self, request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
-
     def _maybe_prune(self, now: float) -> None:
         if now - self._last_prune < self._PRUNE_INTERVAL:
             return
@@ -69,7 +100,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/relay/"):
             return await call_next(request)
 
-        ip = self._get_client_ip(request)
+        ip = client_ip(request)
         now = time.time()
         self._maybe_prune(now)
 

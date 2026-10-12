@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     RELAY_SECRET_KEY: str = "relay-secret"
     RELAY_NODES: str = ""
 
+    # ── Client IPs ─────────────────────────────────────────────
+    # How many proxies in front of the app append to X-Forwarded-For. The
+    # client IP is the entry the outermost of them added, counted from the
+    # right; anything further left was sent by the client and can be forged.
+    # Render: 1. Running uvicorn directly with no proxy: 0.
+    TRUSTED_PROXY_HOPS: int = 1
+
     # ── Usage ──────────────────────────────────────────────────
     USAGE_HEARTBEAT_INTERVAL: int = 5
     SESSION_WARNING_THRESHOLD: float = 0.95
