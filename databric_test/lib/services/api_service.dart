@@ -138,6 +138,13 @@ class ApiService {
     await _dio.post('/sessions/stop');
   }
 
+  /// The seller's tunnel config for their active session, again. Used to
+  /// restart the tunnel after the app was killed mid-session.
+  Future<Map<String, dynamic>> getSellerConfig() async {
+    final resp = await _dio.get('/sessions/seller-config');
+    return resp.data as Map<String, dynamic>;
+  }
+
   /// Connect to a friend's session — returns VLESS URI for buyer
   Future<Map<String, dynamic>> connectToSession(String sellerId) async {
     final resp = await _dio.post('/sessions/connect', data: {

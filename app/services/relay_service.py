@@ -433,6 +433,23 @@ async def terminate_session(
     logger.info(f"Session {session_id} ended: {end_reason}")
 
 
+def build_seller_config(session: dict) -> str:
+    """
+    The seller's Xray config for an existing session, rebuilt from what is
+    stored: the session's slot and seller credentials, and its relay's
+    address and keys (as joined by get_active_session_for_seller).
+    """
+    return generate_seller_bridge_config(
+        relay_host=session["host"],
+        seller_port=session["seller_port"],
+        seller_uuid=session["seller_uuid"],
+        slot=session["relay_slot"],
+        public_key=session["public_key"],
+        short_id=session["short_id"],
+        server_name=session.get("server_name") or "www.google.com",
+    )
+
+
 async def get_active_session_for_seller(seller_id: uuid.UUID) -> dict | None:
     row = await fetchrow(
         """

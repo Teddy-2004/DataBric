@@ -8,7 +8,7 @@ from app.core.security import get_current_user
 from app.services.relay_service import (
     get_best_relay_node, create_session,
     connect_buyer_to_session, terminate_session,
-    get_active_session_for_seller, RelayFullError,
+    get_active_session_for_seller, RelayFullError, build_seller_config,
 )
 from app.services.notification_service import (
     notify_connection_request, notify_session_started,
@@ -130,6 +130,24 @@ async def start_sharing(
         "relay_port": relay["port"],
         "limit_gb": body.limit_gb,
         "message": "Sharing started. Send your session_id to a friend to let them connect."
+    }
+
+
+@router.get("/seller-config", response_model=dict)
+async def get_seller_config(current_user: dict = Depends(get_current_user)):
+    """
+    The seller's tunnel config for their own active session, again.
+
+    /sessions/start sends it once; the app calls this after a restart (Android
+    often kills apps in the background) to bring the seller's tunnel back.
+    Contains the seller's credentials, so only for the seller themselves.
+    """
+    session = await get_active_session_for_seller(current_user["id"])
+    if not session or session.get("relay_slot") is None or not session.get("seller_uuid"):
+        raise HTTPException(status_code=404, detail="No active sharing session to restore.")
+    return {
+        "session_id": str(session["id"]),
+        "seller_config": build_seller_config(session),
     }
 
 

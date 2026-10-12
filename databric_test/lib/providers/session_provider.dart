@@ -184,8 +184,32 @@ double get limitGb {
       _activeSession = session;
       _startPolling();
       notifyListeners();
+
+      // The session is still live on the backend, but this freshly started
+      // app isn't running the seller's tunnel, so the buyer gets nothing.
+      if (_role == SessionRole.seller) {
+        // ignore: unawaited_futures
+        _restoreSellerTunnel();
+      }
     } catch (_) {
       // Non-fatal — the polling will pick it up later if it comes back.
+    }
+  }
+
+  Future<void> _restoreSellerTunnel() async {
+    try {
+      final data = await apiService.getSellerConfig();
+      final restored = await xrayService.restoreSeller(
+        data['seller_config'] as String,
+        data['session_id'] as String,
+      );
+      if (!restored) {
+        _error = xrayService.errorMessage ?? 'Could not restart sharing.';
+        notifyListeners();
+      }
+    } catch (e) {
+      // e.g. 404 for a session from before relay slots: nothing to restore.
+      debugPrint('[SessionProvider] seller tunnel not restored: $e');
     }
   }
 

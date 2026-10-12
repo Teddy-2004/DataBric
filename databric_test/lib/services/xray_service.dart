@@ -42,10 +42,11 @@ enum TunnelStatus { idle, connecting, connected, error }
 /// The backend's /sessions/start returns the bridge config (seller_config);
 /// see app/services/xray_configs.py.
 ///
+/// After an app restart, SessionProvider.restoreActive() fetches the config
+/// again (GET /sessions/seller-config) and calls restoreSeller().
+///
 /// Still to do:
 ///   - seller tunnel survives the app being backgrounded for long periods
-///   - after an app restart, a still-active seller session has no tunnel
-///     (the config is only sent once, at start)
 class XrayService extends ChangeNotifier {
   XrayMode _mode = XrayMode.idle;
   TunnelStatus _status = TunnelStatus.idle;
@@ -229,6 +230,19 @@ class XrayService extends ChangeNotifier {
       _setError('Tunnel error: $e');
       return false;
     }
+  }
+
+  /// Brings the seller's tunnel back after the app was restarted mid-session.
+  ///
+  /// A freshly launched app can't tell whether an engine from before is still
+  /// running in the background process, so it stops it cleanly first. That
+  /// also matters to the plugin: it only switches to proxy-only mode after it
+  /// has seen the engine report "disconnected". Starting without that would
+  /// bring the engine up in VPN mode and block the seller's own traffic.
+  Future<bool> restoreSeller(String sellerConfig, String sessionId) async {
+    debugPrint('[XrayService] restoreSeller: $sessionId');
+    await stopTunnel();
+    return startAsSeller(sellerConfig, sessionId);
   }
 
   Future<bool> _waitForCore({

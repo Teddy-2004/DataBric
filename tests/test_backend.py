@@ -518,3 +518,46 @@ def test_backend_ending_a_session_removes_it_at_once(tmp_path):
     agent.cycle()
     assert "s1" not in agent.applied
     assert "b-s1" in xray.removed and "s-s1" in xray.removed
+
+
+# ── Restoring the seller's tunnel ──────────────────────────────
+def _seller_session_row(**overrides):
+    row = {
+        "id": uuid.uuid4(), "status": "connected", "relay_slot": 5,
+        "seller_uuid": "5e11e200-2222-4ccc-8ddd-000000000009", "short_id": "a1b2c3d4",
+        "host": "relay1.databric.app", "port": 8443, "seller_port": 9443,
+        "public_key": "pbk123", "server_name": "www.google.com",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_seller_config_endpoint_rebuilds_the_same_config():
+    from app.services.xray_configs import generate_seller_bridge_config
+    _as_seller()
+    row = _seller_session_row()
+    try:
+        with patch("app.api.sessions.get_active_session_for_seller", new_callable=AsyncMock, return_value=row):
+            resp = client.get("/sessions/seller-config", headers=_OWN_RATE_BUCKET)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["session_id"] == str(row["id"])
+    expected = generate_seller_bridge_config(
+        relay_host="relay1.databric.app", seller_port=9443, seller_uuid=row["seller_uuid"], slot=5,
+        public_key="pbk123", short_id="a1b2c3d4", server_name="www.google.com")
+    assert body["seller_config"] == expected
+
+
+def test_seller_config_endpoint_404_without_a_restorable_session():
+    _as_seller()
+    try:
+        with patch("app.api.sessions.get_active_session_for_seller", new_callable=AsyncMock, return_value=None):
+            assert client.get("/sessions/seller-config", headers=_OWN_RATE_BUCKET).status_code == 404
+        # A session created before relay slots existed has nothing to restore.
+        old = _seller_session_row(relay_slot=None, seller_uuid=None)
+        with patch("app.api.sessions.get_active_session_for_seller", new_callable=AsyncMock, return_value=old):
+            assert client.get("/sessions/seller-config", headers=_OWN_RATE_BUCKET).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
