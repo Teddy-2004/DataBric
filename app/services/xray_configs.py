@@ -30,9 +30,7 @@ DNS_TAG = "dns-query"  # Xray's own DNS lookups, routed straight out
 DNS_SERVERS = ["1.1.1.1", "8.8.8.8"]
 
 # Destinations a buyer must never reach through a seller's phone: the phone
-# itself, the seller's home or office LAN, carrier-internal ranges. Xray 26's
-# freedom outbound blocks most of these by default too; this rule keeps the
-# guarantee explicit.
+# itself, the seller's home or office LAN, carrier-internal ranges.
 PRIVATE_RANGES = [
     "0.0.0.0/8",
     "10.0.0.0/8",
@@ -96,6 +94,16 @@ def generate_seller_bridge_config(
             {
                 "tag": "direct",
                 "protocol": "freedom",
+                "settings": {
+                    # Xray 26 blocks EVERY destination for traffic that came
+                    # through a VLESS reverse tunnel unless these rules allow
+                    # it. Checked in order; a name is blocked if any of its
+                    # addresses is.
+                    "finalRules": [
+                        {"action": "block", "ip": PRIVATE_RANGES},
+                        {"action": "allow"},
+                    ]
+                },
                 # Resolve names with the DNS servers above (IPv4 first).
                 "streamSettings": {"sockopt": {"domainStrategy": "UseIPv4v6"}},
             },

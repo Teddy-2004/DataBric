@@ -371,6 +371,16 @@ def test_seller_config_resolves_names_itself():
     assert direct["streamSettings"]["sockopt"]["domainStrategy"] == "UseIPv4v6"
 
 
+def test_seller_config_allows_public_destinations_explicitly():
+    """Xray 26 blocks everything that arrives through a reverse tunnel unless
+    freedom's finalRules allow it: private ranges first, then the rest."""
+    c = _seller_config()
+    direct = next(o for o in c["outbounds"] if o["tag"] == "direct")
+    block, allow = direct["settings"]["finalRules"]
+    assert block["action"] == "block" and "192.168.0.0/16" in block["ip"] and "10.0.0.0/8" in block["ip"]
+    assert allow == {"action": "allow"}
+
+
 def test_relay_agent_adds_sellers_with_their_reverse_tag():
     """The seller's account carries the session's reverse tag, and only the
     session's buyer is routed to it."""
