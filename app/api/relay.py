@@ -34,7 +34,7 @@ async def relay_register(
     """
     Called by a relay node when it starts up.
     Registers the node's host, ports, region, Reality key and short id, and
-    how many seller slots its Xray config defines.
+    how many sessions it takes at once (portal_slots).
     """
     _require_relay(x_relay_secret)
 

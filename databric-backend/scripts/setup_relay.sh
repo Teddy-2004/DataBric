@@ -11,12 +11,12 @@
 #   e.g. ... setup_relay.sh nairobi-1 KE Nairobi https://databric.onrender.com
 #
 # Optional env: PUBLIC_HOST (DNS name or IP phones dial; default: detected
-# public IP), PORTAL_SLOTS (default 100), BUYER_PORT (8443), SELLER_PORT (9443).
+# public IP), PORTAL_SLOTS (max sessions, default 100), BUYER_PORT (8443), SELLER_PORT (9443).
 #
 # Safe to re-run: keeps the existing Reality keys in /etc/databric/relay.env.
 #
-# Xray is pinned to v25.3.6, the core bundled in the phone app
-# (flutter_v2ray 1.0.10). Newer relays break the reverse-proxy control channel.
+# Xray is pinned to v26.9.9, the core bundled in the phone app
+# (flutter_v2ray_client 3.5.0). Sellers use VLESS Reverse Proxy (Xray 26+).
 # ============================================================
 
 set -euo pipefail
@@ -30,7 +30,7 @@ BUYER_PORT=${BUYER_PORT:-8443}
 SELLER_PORT=${SELLER_PORT:-9443}
 PORTAL_SLOTS=${PORTAL_SLOTS:-100}
 
-XRAY_VERSION="v25.3.6"
+XRAY_VERSION="v26.9.9"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE=/etc/databric/relay.env
 AGENT_DIR=/opt/databric-relay-agent
@@ -48,14 +48,13 @@ echo "DataBric relay setup: $NODE_ID ($CITY, $REGION)"
 echo "============================================"
 
 # ── Packages ───────────────────────────────────────────────────
-# iproute2 provides `ss`, which the agent uses to cut ended sellers' connections.
 apt-get update -qq
-apt-get install -y -qq curl unzip openssl python3 python3-venv iproute2 ufw >/dev/null
+apt-get install -y -qq curl unzip openssl python3 python3-venv ufw >/dev/null
 
 # ── Xray, pinned ───────────────────────────────────────────────
 case "$(uname -m)" in
-  x86_64)  ASSET="Xray-linux-64.zip";        SHA="82d4be3a5ed8bd2621df9c9913c3a2761b86a42ae8485da836f7447ff2ec3d4d" ;;
-  aarch64) ASSET="Xray-linux-arm64-v8a.zip"; SHA="1595f446b3d3a2bfe4a737e3cdb4c189c8c4e271322a7a2a0f5ea735b9511e80" ;;
+  x86_64)  ASSET="Xray-linux-64.zip";        SHA="1eb9175d0f0a8f8149c9230a7fc5ae66ce332ed20a53155ce61fe62e3f58b7df" ;;
+  aarch64) ASSET="Xray-linux-arm64-v8a.zip"; SHA="3e38d72dfc5eb65c91df0e5583e9b6676c32232041da47de6ae73946b526d66c" ;;
   *) echo "Unsupported CPU: $(uname -m)"; exit 1 ;;
 esac
 if ! /usr/local/bin/xray version 2>/dev/null | grep -q "^Xray ${XRAY_VERSION#v} "; then
@@ -80,8 +79,9 @@ if [ -f "$ENV_FILE" ] && grep -q '^REALITY_PRIVATE_KEY=.' "$ENV_FILE"; then
 else
   echo "Generating Reality keypair..."
   KEYS=$(/usr/local/bin/xray x25519)
-  PRIVATE_KEY=$(echo "$KEYS" | grep "Private key" | awk '{print $NF}')
-  PUBLIC_KEY=$(echo "$KEYS" | grep "Public key" | awk '{print $NF}')
+  # Xray 25 prints "Private key:/Public key:", Xray 26 "PrivateKey:/Password (PublicKey):".
+  PRIVATE_KEY=$(echo "$KEYS" | grep -iE '^private ?key:' | awk '{print $NF}')
+  PUBLIC_KEY=$(echo "$KEYS" | grep -iE 'public ?key' | awk '{print $NF}')
   SHORT_ID=$(openssl rand -hex 4)
 fi
 if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ] || [ -z "$SHORT_ID" ]; then
@@ -147,7 +147,7 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
-# Root: it cuts other processes' TCP connections with `ss -K`.
+# Root: it reads the root-only /etc/databric/relay.env.
 cat > /etc/systemd/system/databric-relay-agent.service <<EOF
 [Unit]
 Description=DataBric relay agent
@@ -186,7 +186,7 @@ echo ""
 echo "============================================"
 echo "Relay ready: $NODE_ID"
 echo "Phones dial:  $PUBLIC_HOST  (buyers :$BUYER_PORT, sellers :$SELLER_PORT)"
-echo "Slots:        $PORTAL_SLOTS"
+echo "Max sessions: $PORTAL_SLOTS"
 echo "Public key:   $PUBLIC_KEY"
 echo "Short ID:     $SHORT_ID"
 echo ""

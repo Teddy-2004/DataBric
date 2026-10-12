@@ -14,24 +14,23 @@
 # own, so any answer came through the phone. On mobile data it should be the
 # carrier's IP, not this laptop's.
 #
-# Xray is pinned to v25.3.6 because that is the core bundled in
-# flutter_v2ray 1.0.10 on the phone. A newer relay and the older phone core
-# disagree on the reverse control channel.
+# Xray is pinned to v26.9.9, the core bundled in flutter_v2ray_client 3.5.0
+# on the phone. The seller uses VLESS Reverse Proxy, which needs Xray 26+.
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-XRAY_VERSION="v25.3.6"
+XRAY_VERSION="v26.9.9"
 CHECK_URL="${CHECK_URL:-https://api.ipify.org}"
 SOCKS="socks5h://127.0.0.1:10808"
 CACHE="$HOME/.cache/databric/xray-$XRAY_VERSION"
 LOGS="${TMPDIR:-/tmp}/databric-static-test"
 
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64)  ASSET="Xray-macos-arm64-v8a.zip"; SHA="0d8486ab2eb089abcbc47a7c8d2004490c98dc8fd2ca760915ad746667aa7d7b" ;;
-  Darwin-x86_64) ASSET="Xray-macos-64.zip";        SHA="cc773fca109d45de4ad3a62eedf5142391c61c3048eb80b6370ce97bf5d0a075" ;;
-  Linux-x86_64)  ASSET="Xray-linux-64.zip";        SHA="82d4be3a5ed8bd2621df9c9913c3a2761b86a42ae8485da836f7447ff2ec3d4d" ;;
-  Linux-aarch64) ASSET="Xray-linux-arm64-v8a.zip"; SHA="1595f446b3d3a2bfe4a737e3cdb4c189c8c4e271322a7a2a0f5ea735b9511e80" ;;
+  Darwin-arm64)  ASSET="Xray-macos-arm64-v8a.zip"; SHA="b7cf765d60ccc703853d4218c49a1eacc5bca764543b9540bdeaf45c951afc7d" ;;
+  Darwin-x86_64) ASSET="Xray-macos-64.zip";        SHA="32b5d106b9936f3ae2044cd283d9e22749b57fd30b34a58792b86c90018bb5e4" ;;
+  Linux-x86_64)  ASSET="Xray-linux-64.zip";        SHA="1eb9175d0f0a8f8149c9230a7fc5ae66ce332ed20a53155ce61fe62e3f58b7df" ;;
+  Linux-aarch64) ASSET="Xray-linux-arm64-v8a.zip"; SHA="3e38d72dfc5eb65c91df0e5583e9b6676c32232041da47de6ae73946b526d66c" ;;
   *) echo "Unsupported platform: $(uname -s)-$(uname -m)"; exit 1 ;;
 esac
 
@@ -132,9 +131,8 @@ TUNNEL=""
 while [ -z "$TUNNEL" ]; do
   # The phone may be connected after the script started; keep trying quietly.
   [ "$REVERSE_OK" = 1 ] || setup_reverse quiet || true
-  if grep -q "seller-in -> portal" "$LOGS/relay.log" 2>/dev/null; then
-    TUNNEL="$(curl -s -m 10 --noproxy '' -x "$SOCKS" "$CHECK_URL" || true)"
-  fi
+  # Xray 26 doesn't log reverse-tunnel connections; just try the request.
+  TUNNEL="$(curl -s -m 5 --noproxy '' -x "$SOCKS" "$CHECK_URL" || true)"
   [ -n "$TUNNEL" ] || sleep 2
 done
 

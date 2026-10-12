@@ -1,23 +1,32 @@
 """
-Xray configs handed to the phones, and the slot naming shared with the relay.
+Xray configs handed to the sellers' phones.
 
-The relay agent (scripts/relay_agent.py) defines one reverse-proxy portal per
-slot and routes each session's seller and buyer to it. slot_domain() must stay
-identical to the agent's, or sellers will attach to a slot no buyer reaches.
+Sellers use Xray's VLESS Reverse Proxy (Xray 26+; the older "reverse"
+bridges/portals were removed). The phone dials out to the relay's seller
+port as a VLESS user that the relay agent (scripts/relay_agent.py) created
+with a reverse tag for this session; the relay routes that session's buyer to
+the tag, so buyer traffic comes down the phone's connection and leaves
+through the phone's own network.
 
-The phone app runs these configs with flutter_v2ray 1.0.10 (Xray v25.3.6),
-which requires:
+The phone app runs these configs with flutter_v2ray_client 3.5.0
+(Xray v26.9.9), which requires:
   - an "inbounds" array
-  - outbounds[0] is the VLESS outbound with settings.vnext[0]
-  - that outbound tagged "proxy", for its traffic counters
+  - outbounds[0].settings.vnext[0] or .servers[0] with address and port (it
+    reads them for its notification). VLESS Reverse only works in the flat
+    outbound format, and a "vnext" key would switch Xray to the old format,
+    so the outbound carries a "servers" entry that Xray ignores.
+  - the tunnel outbound tagged "proxy", for its traffic counters
 """
 
 import json
 
 SELLER_LOCAL_SOCKS_PORT = 10818  # unused locally; the plugin refuses configs without an inbound
+REVERSE_INBOUND_TAG = "r-in"  # where buyer traffic enters the seller's routing
 
 # Destinations a buyer must never reach through a seller's phone: the phone
-# itself, the seller's home or office LAN, carrier-internal ranges.
+# itself, the seller's home or office LAN, carrier-internal ranges. Xray 26's
+# freedom outbound blocks most of these by default too; this rule keeps the
+# guarantee explicit.
 PRIVATE_RANGES = [
     "0.0.0.0/8",
     "10.0.0.0/8",
@@ -32,33 +41,19 @@ PRIVATE_RANGES = [
 ]
 
 
-def slot_domain(slot: int) -> str:
-    return f"slot-{slot:03d}.relay.databric.internal"
-
-
 def generate_seller_bridge_config(
     *,
     relay_host: str,
     seller_port: int,
     seller_uuid: str,
-    slot: int,
     public_key: str,
     short_id: str,
     server_name: str,
     fingerprint: str = "chrome",
 ) -> str:
-    """
-    Full Xray config for the seller's phone (reverse-proxy bridge).
-
-    The phone dials OUT to the relay's seller port and offers itself as the
-    bridge for its slot; buyer traffic for that slot comes back down that
-    connection and leaves through the phone's own network. Mirrors
-    xray/static-test/seller.json, with Reality added for real networks.
-    """
-    domain = slot_domain(slot)
+    """Full Xray config for the seller's phone (VLESS reverse tunnel)."""
     config = {
         "log": {"loglevel": "warning"},
-        "reverse": {"bridges": [{"tag": "bridge", "domain": domain}]},
         "inbounds": [
             {
                 "tag": "local-socks",
@@ -73,13 +68,13 @@ def generate_seller_bridge_config(
                 "tag": "proxy",
                 "protocol": "vless",
                 "settings": {
-                    "vnext": [
-                        {
-                            "address": relay_host,
-                            "port": seller_port,
-                            "users": [{"id": seller_uuid, "encryption": "none"}],
-                        }
-                    ]
+                    "address": relay_host,
+                    "port": seller_port,
+                    "id": seller_uuid,
+                    "encryption": "none",
+                    "reverse": {"tag": REVERSE_INBOUND_TAG},
+                    # Read by the plugin only; Xray ignores it.
+                    "servers": [{"address": relay_host, "port": seller_port}],
                 },
                 "streamSettings": {
                     "network": "tcp",
@@ -102,17 +97,11 @@ def generate_seller_bridge_config(
             "rules": [
                 {
                     "type": "field",
-                    "inboundTag": ["bridge"],
-                    "domain": [f"full:{domain}"],
-                    "outboundTag": "proxy",
-                },
-                {
-                    "type": "field",
-                    "inboundTag": ["bridge"],
+                    "inboundTag": [REVERSE_INBOUND_TAG],
                     "ip": PRIVATE_RANGES,
                     "outboundTag": "block",
                 },
-                {"type": "field", "inboundTag": ["bridge"], "outboundTag": "direct"},
+                {"type": "field", "inboundTag": [REVERSE_INBOUND_TAG], "outboundTag": "direct"},
                 {"type": "field", "inboundTag": ["local-socks"], "outboundTag": "block"},
             ],
         },

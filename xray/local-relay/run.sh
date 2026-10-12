@@ -62,7 +62,6 @@ docker run -d --name "$NAME" \
   -e PORTAL_SLOTS=10 \
   -e HEARTBEAT_INTERVAL=30 \
   -p 8443:8443 -p 9443:9443 \
-  --cap-add NET_ADMIN \
   -v databric-local-relay:/state \
   "$IMAGE" >/dev/null
 

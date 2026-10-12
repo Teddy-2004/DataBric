@@ -323,46 +323,57 @@ def _seller_config(**overrides):
     from app.services.xray_configs import generate_seller_bridge_config
     args = dict(
         relay_host="relay1.databric.app", seller_port=9443,
-        seller_uuid="5e11e200-2222-4ccc-8ddd-000000000002", slot=7,
+        seller_uuid="5e11e200-2222-4ccc-8ddd-000000000002",
         public_key="pbk123", short_id="a1b2c3d4", server_name="www.google.com",
     )
     args.update(overrides)
     return json.loads(generate_seller_bridge_config(**args))
 
 
-def test_seller_config_meets_flutter_v2ray_requirements():
-    """flutter_v2ray 1.0.10 silently refuses configs that break these."""
+def test_seller_config_meets_flutter_v2ray_client_requirements():
+    """flutter_v2ray_client 3.5.0 refuses configs that break these."""
     c = _seller_config()
     assert isinstance(c["inbounds"], list) and c["inbounds"]
     first = c["outbounds"][0]
     assert first["tag"] == "proxy" and first["protocol"] == "vless"
-    vnext = first["settings"]["vnext"][0]
-    assert vnext["address"] == "relay1.databric.app" and vnext["port"] == 9443
-    assert vnext["users"][0]["id"] == "5e11e200-2222-4ccc-8ddd-000000000002"
+    # The plugin reads settings.vnext[0] or settings.servers[0]; "vnext" would
+    # switch Xray to the old outbound format, where reverse doesn't work.
+    assert "vnext" not in first["settings"]
+    assert first["settings"]["servers"][0] == {"address": "relay1.databric.app", "port": 9443}
     reality = first["streamSettings"]["realitySettings"]
     assert first["streamSettings"]["security"] == "reality"
     assert reality == {"serverName": "www.google.com", "fingerprint": "chrome",
                        "publicKey": "pbk123", "shortId": "a1b2c3d4"}
 
 
-def test_seller_config_bridges_its_own_slot_and_blocks_private_ranges():
-    c = _seller_config(slot=42)
-    domain = "slot-042.relay.databric.internal"
-    assert c["reverse"]["bridges"] == [{"tag": "bridge", "domain": domain}]
+def test_seller_config_is_a_vless_reverse_tunnel_that_blocks_private_ranges():
+    c = _seller_config()
+    vless = c["outbounds"][0]["settings"]
+    assert vless["address"] == "relay1.databric.app" and vless["port"] == 9443
+    assert vless["id"] == "5e11e200-2222-4ccc-8ddd-000000000002"
+    assert vless["reverse"] == {"tag": "r-in"}
+    assert "reverse" not in c  # Xray 26 rejects the old reverse section
     rules = c["routing"]["rules"]
-    assert rules[0]["domain"] == [f"full:{domain}"] and rules[0]["outboundTag"] == "proxy"
-    private = rules[1]
-    assert private["outboundTag"] == "block" and "192.168.0.0/16" in private["ip"]
+    private = rules[0]
+    assert private["inboundTag"] == ["r-in"] and private["outboundTag"] == "block"
+    assert "192.168.0.0/16" in private["ip"]
+    assert rules[1] == {"type": "field", "inboundTag": ["r-in"], "outboundTag": "direct"}
     assert c["routing"]["domainStrategy"] == "IPOnDemand"
 
 
-def test_slot_naming_matches_relay_agent():
-    """Backend and relay agent must agree, or sellers attach where no buyer goes."""
-    from app.services.xray_configs import slot_domain
+def test_relay_agent_adds_sellers_with_their_reverse_tag():
+    """The seller's account carries the session's reverse tag, and only the
+    session's buyer is routed to it."""
     agent = _load_relay_agent()
-    for slot in (0, 7, 99, 250):
-        assert slot_domain(slot) == agent.slot_domain(slot)
-        assert agent.portal_tag(slot).endswith(f"{slot:03d}")
+    sid = "3f1c0000-0000-4000-8000-000000000001"
+    req = agent.encode_add_vless_user("seller-in", f"s-{sid}", "u-1", reverse=agent.reverse_tag(sid))
+    assert f"r-{sid}".encode() in req
+    plain = agent.encode_add_vless_user("buyer-in", f"b-{sid}", "u-2", flow="xtls-rprx-vision")
+    assert f"r-{sid}".encode() not in plain
+    (rule,) = agent.session_rules(sid)
+    assert rule["user"] == [f"b-{sid}"] and rule["outboundTag"] == f"r-{sid}"
+    cfg = agent.render_xray_config(agent.load_settings(None))
+    assert "reverse" not in cfg
 
 
 def test_relay_sessions_requires_secret():
@@ -482,7 +493,7 @@ def _agent(tmp_path, xray=None, backend=None):
     ra = _load_relay_agent()
     s = ra.load_settings(None)
     s["STATE_FILE"] = str(tmp_path / "state.json")
-    agent = ra.Agent(s, xray or _FakeXray(), backend or _FakeBackend(), ra.SellerConnections("/nonexistent"))
+    agent = ra.Agent(s, xray or _FakeXray(), backend or _FakeBackend())
     return ra, agent
 
 
@@ -590,7 +601,7 @@ def test_seller_config_endpoint_rebuilds_the_same_config():
     body = resp.json()
     assert body["session_id"] == str(row["id"])
     expected = generate_seller_bridge_config(
-        relay_host="relay1.databric.app", seller_port=9443, seller_uuid=row["seller_uuid"], slot=5,
+        relay_host="relay1.databric.app", seller_port=9443, seller_uuid=row["seller_uuid"],
         public_key="pbk123", short_id="a1b2c3d4", server_name="www.google.com")
     assert body["seller_config"] == expected
 

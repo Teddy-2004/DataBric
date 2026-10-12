@@ -3,18 +3,18 @@
 # Build context: databric-backend/scripts (for relay_agent.py). Use run.sh.
 FROM python:3.12-slim
 
-ARG XRAY_VERSION=v25.3.6
+ARG XRAY_VERSION=v26.9.9
 ARG TARGETARCH
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends curl unzip ca-certificates iproute2 >/dev/null \
+ && apt-get install -y -qq --no-install-recommends curl unzip ca-certificates >/dev/null \
  && rm -rf /var/lib/apt/lists/*
 
-# Pinned to the core bundled in the phone app (flutter_v2ray 1.0.10). Newer
-# relays break the reverse-proxy control channel.
+# Pinned to the core bundled in the phone app (flutter_v2ray_client 3.5.0).
+# Sellers use VLESS Reverse Proxy, which needs Xray 26+.
 RUN set -eu; \
     case "$TARGETARCH" in \
-      amd64) ASSET=Xray-linux-64.zip;        SHA=82d4be3a5ed8bd2621df9c9913c3a2761b86a42ae8485da836f7447ff2ec3d4d ;; \
-      arm64) ASSET=Xray-linux-arm64-v8a.zip; SHA=1595f446b3d3a2bfe4a737e3cdb4c189c8c4e271322a7a2a0f5ea735b9511e80 ;; \
+      amd64) ASSET=Xray-linux-64.zip;        SHA=1eb9175d0f0a8f8149c9230a7fc5ae66ce332ed20a53155ce61fe62e3f58b7df ;; \
+      arm64) ASSET=Xray-linux-arm64-v8a.zip; SHA=3e38d72dfc5eb65c91df0e5583e9b6676c32232041da47de6ae73946b526d66c ;; \
       *) echo "unsupported arch $TARGETARCH"; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/$XRAY_VERSION/$ASSET"; \
@@ -35,10 +35,16 @@ set -euo pipefail
 mkdir -p /state /var/log/xray
 KEYS=/state/keys.env
 if [ ! -s "$KEYS" ]; then
+  # Xray 25 prints "Private key:/Public key:", Xray 26 "PrivateKey:/Password (PublicKey):".
   out=$(xray x25519)
+  priv=$(echo "$out" | grep -iE '^private ?key:' | awk '{print $NF}')
+  pub=$(echo "$out" | grep -iE 'public ?key' | awk '{print $NF}')
+  if [ -z "$priv" ] || [ -z "$pub" ]; then
+    echo "Could not read the keys from 'xray x25519':"; echo "$out"; exit 1
+  fi
   {
-    echo "REALITY_PRIVATE_KEY=$(echo "$out" | grep 'Private key' | awk '{print $NF}')"
-    echo "REALITY_PUBLIC_KEY=$(echo "$out" | grep 'Public key' | awk '{print $NF}')"
+    echo "REALITY_PRIVATE_KEY=$priv"
+    echo "REALITY_PUBLIC_KEY=$pub"
     echo "REALITY_SHORT_ID=$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
   } > "$KEYS"
   echo "Generated new Reality keys."

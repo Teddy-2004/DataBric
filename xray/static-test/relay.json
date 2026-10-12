@@ -1,9 +1,6 @@
 {
-  "log": { "loglevel": "info" },
-  "reverse": {
-    "portals": [
-      { "tag": "portal", "domain": "seller.databric.test" }
-    ]
+  "log": {
+    "loglevel": "info"
   },
   "inbounds": [
     {
@@ -13,7 +10,10 @@
       "protocol": "vless",
       "settings": {
         "clients": [
-          { "id": "b0a1c2d3-1111-4aaa-8bbb-000000000001", "email": "buyer@static-test" }
+          {
+            "id": "b0a1c2d3-1111-4aaa-8bbb-000000000001",
+            "email": "buyer@static-test"
+          }
         ],
         "decryption": "none"
       }
@@ -25,27 +25,32 @@
       "protocol": "vless",
       "settings": {
         "clients": [
-          { "id": "5e11e200-2222-4ccc-8ddd-000000000002", "email": "seller@static-test" }
+          {
+            "id": "5e11e200-2222-4ccc-8ddd-000000000002",
+            "email": "seller@static-test",
+            "reverse": {
+              "tag": "r-static"
+            }
+          }
         ],
         "decryption": "none"
       }
     }
   ],
   "outbounds": [
-    { "tag": "blocked", "protocol": "blackhole" }
+    {
+      "tag": "blocked",
+      "protocol": "blackhole"
+    }
   ],
   "routing": {
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["seller-in"],
-        "domain": ["full:seller.databric.test"],
-        "outboundTag": "portal"
-      },
-      {
-        "type": "field",
-        "inboundTag": ["buyer-in"],
-        "outboundTag": "portal"
+        "inboundTag": [
+          "buyer-in"
+        ],
+        "outboundTag": "r-static"
       }
     ]
   }

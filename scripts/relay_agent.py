@@ -8,31 +8,34 @@ with the backend:
   * registers the node with the backend on start, then heartbeats
   * every few seconds asks the backend which sessions are live on this node
     (GET /relay/sessions) and, without restarting Xray:
-      - adds the session's seller and buyer credentials
-      - adds routing rules binding them to the session's reverse-proxy slot
-      - on session end, removes all of that and cuts the seller's open
-        connections, so the slot is clean for the next session
+      - adds the session's seller (a VLESS user with reverse tag r-<session>)
+        and buyer credentials
+      - adds a routing rule sending that buyer to the seller's reverse tag
+      - on session end, removes all of that
   * meters each session's traffic (the buyer's bytes through the relay) and
     reports it to the backend (POST /relay/usage), which ends the session
     when the seller's data limit is reached
   * `render-config` prints the Xray config this agent expects to manage
 
-Why slots: the reverse proxy entry points ("portals") of Xray v25.3.6 can only
-be defined in the config file, not added at runtime. The config defines
-PORTAL_SLOTS of them; the backend gives each session a free one.
+Sellers use Xray's VLESS Reverse Proxy: the phone dials the seller port as a
+VLESS user whose account carries a reverse tag, and that tag becomes an
+outbound the relay can route to. Each session has its own tag, so an ended
+seller can never receive another session's traffic. PORTAL_SLOTS (the name is
+historical) only caps how many sessions the backend puts on this relay.
 
-Why cut connections: Xray cannot detach a bridge from a portal. A seller
-whose session ended could otherwise stay attached to the slot and receive the
-next session's buyer traffic.
+An ended seller's tunnel stays open until the phone closes it (the app does
+within seconds of the session ending), but with its rule gone nothing is
+routed to it. Xray 26 doesn't log reverse-tunnel connections, so the agent
+can't tell them apart to cut them, and doesn't need to.
 
-Xray must be v25.3.6, the core bundled in the phone app (flutter_v2ray 1.0.10).
+Xray must be v26.9.9, the core bundled in the phone app
+(flutter_v2ray_client 3.5.0). Xray 26 removed the older reverse proxy.
 
 Usage:
   relay_agent.py render-config [--env /etc/databric/relay.env]
   relay_agent.py run           [--env /etc/databric/relay.env]
 
-Needs: Python 3.8+, grpcio (pip install grpcio), the xray binary, and `ss`
-(iproute2) with kernel socket-destroy support, run as root.
+Needs: Python 3.8+, grpcio (pip install grpcio) and the xray binary.
 """
 
 from __future__ import annotations
@@ -41,7 +44,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -62,12 +64,9 @@ BUYER_FLOW = "xtls-rprx-vision"  # must match the buyer VLESS URI from the backe
 
 # ── Naming shared with the backend (app/services/relay_service.py) ──────────
 
-def slot_domain(slot: int) -> str:
-    return f"slot-{slot:03d}.relay.databric.internal"
-
-
-def portal_tag(slot: int) -> str:
-    return f"portal-{slot:03d}"
+def reverse_tag(session_id: str) -> str:
+    """Outbound tag of the session's seller tunnel (VLESS reverse)."""
+    return f"r-{session_id}"
 
 
 def buyer_email(session_id: str) -> str:
@@ -89,7 +88,7 @@ DEFAULTS = {
     "CITY": "Nairobi",
     "BUYER_PORT": "8443",
     "SELLER_PORT": "9443",
-    "PORTAL_SLOTS": "100",
+    "PORTAL_SLOTS": "100",      # max sessions on this relay
     "REALITY_PRIVATE_KEY": "",
     "REALITY_PUBLIC_KEY": "",
     "REALITY_SHORT_ID": "",
@@ -152,7 +151,7 @@ def render_xray_config(s: dict) -> dict:
     return {
         "log": {
             "loglevel": "warning",
-            # The agent reads the access log to find each seller's connections.
+            # Who connected and where their traffic went, for debugging.
             "access": s["ACCESS_LOG"],
             "error": s["ERROR_LOG"],
         },
@@ -165,12 +164,6 @@ def render_xray_config(s: dict) -> dict:
         "policy": {
             "levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True}},
             "system": {"statsInboundUplink": True, "statsInboundDownlink": True},
-        },
-        "reverse": {
-            "portals": [
-                {"tag": portal_tag(i), "domain": slot_domain(i)}
-                for i in range(s["PORTAL_SLOTS"])
-            ]
         },
         "inbounds": [
             vless_inbound(BUYER_INBOUND, s["BUYER_PORT"]),
@@ -185,30 +178,21 @@ def render_xray_config(s: dict) -> dict:
     }
 
 
-def session_rules(session_id: str, slot: int) -> list:
+def session_rules(session_id: str) -> list:
+    """The buyer's traffic goes to this session's seller, and nowhere else."""
     return [
         {
-            # The seller's bridge may only attach to its own slot.
-            "type": "field",
-            "ruleTag": seller_email(session_id),
-            "inboundTag": [SELLER_INBOUND],
-            "user": [seller_email(session_id)],
-            "domain": [f"full:{slot_domain(slot)}"],
-            "outboundTag": portal_tag(slot),
-        },
-        {
-            # The buyer's traffic goes to that slot, and so to that seller.
             "type": "field",
             "ruleTag": buyer_email(session_id),
             "inboundTag": [BUYER_INBOUND],
             "user": [buyer_email(session_id)],
-            "outboundTag": portal_tag(slot),
+            "outboundTag": reverse_tag(session_id),
         },
     ]
 
 
 # ── Minimal protobuf encoding for Xray's HandlerService.AlterInbound ────────
-# Field numbers from xray-core v25.3.6: app/proxyman/command/command.proto,
+# Field numbers from xray-core v26.9.9: app/proxyman/command/command.proto,
 # common/protocol/user.proto, common/serial/typed_message.proto,
 # proxy/vless/account.proto. Hand-encoded so the relay only needs grpcio,
 # not generated stubs.
@@ -237,8 +221,14 @@ def _typed_message(type_name: str, value: bytes) -> bytes:
     return _str_field(1, type_name) + _len_field(2, value)
 
 
-def encode_add_vless_user(inbound_tag: str, email: str, user_id: str, flow: str = "") -> bytes:
+def encode_add_vless_user(
+    inbound_tag: str, email: str, user_id: str, flow: str = "", reverse: str = ""
+) -> bytes:
     account = _str_field(1, user_id) + _str_field(2, flow) + _str_field(3, "none")
+    if reverse:
+        # Account.reverse (7) = Reverse{tag (1)}: connections from this user
+        # register a reverse tunnel reachable as outbound `reverse`.
+        account += _len_field(7, _str_field(1, reverse))
     user = _str_field(2, email) + _len_field(
         3, _typed_message("xray.proxy.vless.Account", account)
     )
@@ -271,8 +261,8 @@ class XrayApi:
             response_deserializer=lambda b: b,
         )
 
-    def add_user(self, inbound_tag: str, email: str, user_id: str, flow: str = ""):
-        self._alter(encode_add_vless_user(inbound_tag, email, user_id, flow), timeout=5)
+    def add_user(self, inbound_tag: str, email: str, user_id: str, flow: str = "", reverse: str = ""):
+        self._alter(encode_add_vless_user(inbound_tag, email, user_id, flow, reverse), timeout=5)
 
     def remove_user(self, inbound_tag: str, email: str) -> bool:
         try:
@@ -327,102 +317,6 @@ def parse_user_traffic(output: str) -> dict:
         if len(parts) == 4 and parts[0] == "user" and parts[2] == "traffic":
             totals[parts[1]] = totals.get(parts[1], 0) + int(stat.get("value") or 0)
     return totals
-
-
-# ── Seller connections, read from Xray's access log ─────────────────────────
-
-ACCESS_RE = re.compile(
-    r"from (?:tcp:)?\[?([0-9a-fA-F:.]+?)\]?:(\d+) accepted \S+ \["
-    + re.escape(SELLER_INBOUND)
-    + r" -> [^\]]+\] email: (s-[0-9a-fA-F-]+)"
-)
-
-
-class SellerConnections:
-    """Follows the access log and remembers which TCP peers belong to which seller."""
-
-    def __init__(self, path: str):
-        self.path = path
-        self._lock = threading.Lock()
-        self._by_email: dict[str, set] = {}
-
-    def feed(self, line: str):
-        m = ACCESS_RE.search(line)
-        if m:
-            ip, port, email = m.group(1), int(m.group(2)), m.group(3)
-            with self._lock:
-                self._by_email.setdefault(email, set()).add((ip, port))
-
-    def take(self, email: str) -> set:
-        with self._lock:
-            return self._by_email.pop(email, set())
-
-    def follow(self, stop: threading.Event):
-        f, inode = None, None
-        while not stop.is_set():
-            try:
-                st = os.stat(self.path)
-                if f is None or st.st_ino != inode or f.tell() > st.st_size:
-                    if f:
-                        f.close()
-                    # From the start: rebuilds the map after an agent restart.
-                    f, inode = open(self.path, "r", errors="replace"), st.st_ino
-                line = f.readline()
-                if line:
-                    self.feed(line)
-                    continue
-            except FileNotFoundError:
-                pass
-            stop.wait(0.5)
-
-
-def _open_tcp_peers(local_port: int) -> set:
-    """Remote (ip, port) of established TCP connections to local_port."""
-    peers = set()
-    for path, v6 in (("/proc/net/tcp", False), ("/proc/net/tcp6", True)):
-        try:
-            lines = Path(path).read_text().splitlines()[1:]
-        except FileNotFoundError:
-            continue
-        for row in lines:
-            parts = row.split()
-            if len(parts) < 4 or parts[3] != "01":  # 01 = ESTABLISHED
-                continue
-            if int(parts[1].split(":")[1], 16) != local_port:
-                continue
-            rhex, rport = parts[2].split(":")
-            peers.add((_hex_ip(rhex, v6), int(rport, 16)))
-    return peers
-
-
-def _hex_ip(h: str, v6: bool) -> str:
-    import ipaddress
-
-    raw = bytes.fromhex(h)
-    if not v6:
-        return str(ipaddress.IPv4Address(raw[::-1]))
-    # /proc/net/tcp6 stores four little-endian 32-bit words
-    words = b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4))
-    addr = ipaddress.IPv6Address(words)
-    return str(addr.ipv4_mapped) if addr.ipv4_mapped else str(addr)
-
-
-def cut_connections(peers: set, seller_port: int) -> set:
-    """Kills the given TCP connections. Returns those still open afterwards."""
-    for ip, port in peers:
-        target = f"[{ip}]" if ":" in ip else ip
-        try:
-            r = subprocess.run(
-                ["ss", "-K", "dst", target, "dport", "=", f":{port}"],
-                capture_output=True, text=True, timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError) as e:
-            log.error("could not run ss -K (install iproute2): %s", e)
-            continue
-        if r.returncode != 0:
-            log.warning("ss -K failed for %s:%s: %s", ip, port, r.stderr.strip())
-    time.sleep(0.2)
-    return peers & _open_tcp_peers(seller_port)
 
 
 # ── Backend client ──────────────────────────────────────────────────────────
@@ -522,8 +416,8 @@ def xray_pid() -> int | None:
 # ── The agent ───────────────────────────────────────────────────────────────
 
 class Agent:
-    def __init__(self, s: dict, api: XrayApi, backend: Backend, conns: SellerConnections):
-        self.s, self.api, self.backend, self.conns = s, api, backend, conns
+    def __init__(self, s: dict, api: XrayApi, backend: Backend):
+        self.s, self.api, self.backend = s, api, backend
         self.state_path = Path(s["STATE_FILE"])
         # session id -> {"slot": int, "counted": bytes already queued for reporting}
         self.applied: dict[str, dict] = {}
@@ -647,9 +541,9 @@ class Agent:
         self.api.remove_user(SELLER_INBOUND, seller_email(sid))
         self.api.remove_user(BUYER_INBOUND, buyer_email(sid))
         try:
-            self.api.add_user(SELLER_INBOUND, seller_email(sid), x["seller_uuid"])
+            self.api.add_user(SELLER_INBOUND, seller_email(sid), x["seller_uuid"], reverse=reverse_tag(sid))
             self.api.add_user(BUYER_INBOUND, buyer_email(sid), x["buyer_uuid"], BUYER_FLOW)
-            self.api.add_rules(session_rules(sid, slot))
+            self.api.add_rules(session_rules(sid))
         except Exception as e:
             log.error("could not apply session %s: %s", sid, e)
             return
@@ -662,17 +556,9 @@ class Agent:
         self.api.remove_rules([seller_email(sid), buyer_email(sid)])
         self.api.remove_user(SELLER_INBOUND, seller_email(sid))
         self.api.remove_user(BUYER_INBOUND, buyer_email(sid))
-        peers = self.conns.take(seller_email(sid))
-        still_open = cut_connections(peers, self.s["SELLER_PORT"]) if peers else set()
-        if still_open:
-            log.error(
-                "session %s ended but %d seller connection(s) on slot %s are still open: %s. "
-                "Slot %s may carry the next session's traffic to this seller.",
-                sid, len(still_open), slot, sorted(still_open), slot,
-            )
         del self.applied[sid]
         self._save_state()
-        log.info("session %s removed from slot %s (cut %d connection(s))", sid, slot, len(peers) - len(still_open))
+        log.info("session %s removed from slot %s", sid, slot)
 
     def run(self, stop: threading.Event):
         while not stop.is_set():
@@ -724,10 +610,8 @@ def main(argv=None):
             log.error("PUBLIC_HOST is empty and the public IP could not be detected")
             return 1
 
-    conns = SellerConnections(s["ACCESS_LOG"])
     stop = threading.Event()
-    threading.Thread(target=conns.follow, args=(stop,), daemon=True).start()
-    agent = Agent(s, XrayApi(s["XRAY_API"], s["XRAY_BIN"]), Backend(s["BACKEND_URL"], s["RELAY_SECRET"]), conns)
+    agent = Agent(s, XrayApi(s["XRAY_API"], s["XRAY_BIN"]), Backend(s["BACKEND_URL"], s["RELAY_SECRET"]))
     try:
         agent.run(stop)
     except KeyboardInterrupt:

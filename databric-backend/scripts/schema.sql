@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     short_id            TEXT NOT NULL DEFAULT '', -- Reality short id in the relay's config
     server_name         TEXT NOT NULL DEFAULT 'www.google.com', -- Reality SNI
     seller_port         INTEGER NOT NULL DEFAULT 9443,
-    portal_slots        INTEGER NOT NULL DEFAULT 0, -- seller slots (reverse portals) in the relay's config
+    portal_slots        INTEGER NOT NULL DEFAULT 0, -- max sessions the relay takes at once
     status              TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active', 'blocked', 'retired')),
     active_sessions     INTEGER DEFAULT 0,

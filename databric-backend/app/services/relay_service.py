@@ -183,9 +183,9 @@ async def mark_node_blocked(node_id: str, carrier: str):
 async def _pick_free_slot(relay_node: dict) -> int | None:
     """
     A seller slot on this relay that no live session holds, least recently
-    used first. Spreading reuse out gives an ended seller's connection the
-    longest possible time to be gone before the slot is handed on (the relay
-    agent also cuts it when the session ends).
+    used first. Slots cap how many sessions a relay carries at once
+    (portal_slots); the tunnel itself is per session (VLESS reverse tag
+    r-<session id>), so a reused slot never reaches an earlier seller.
     """
     row = await fetchrow(
         """
@@ -221,7 +221,7 @@ async def create_session(
     Create a new sharing session in ADVERTISING state on a free relay slot.
 
     Returns the session row plus:
-      - seller_config: full Xray config for the seller's phone (reverse bridge)
+      - seller_config: full Xray config for the seller's phone (VLESS reverse tunnel)
       - vless_uri: the buyer's connection link (same one /sessions/connect returns)
 
     Raises RelayFullError if the relay has no free slot.
@@ -279,7 +279,6 @@ async def create_session(
         relay_host=relay_node["host"],
         seller_port=relay_node["seller_port"],
         seller_uuid=seller_uuid,
-        slot=slot,
         public_key=relay_node["public_key"],
         short_id=short_id,
         server_name=server_name,
@@ -436,14 +435,13 @@ async def terminate_session(
 def build_seller_config(session: dict) -> str:
     """
     The seller's Xray config for an existing session, rebuilt from what is
-    stored: the session's slot and seller credentials, and its relay's
+    stored: the session's seller credentials, and its relay's
     address and keys (as joined by get_active_session_for_seller).
     """
     return generate_seller_bridge_config(
         relay_host=session["host"],
         seller_port=session["seller_port"],
         seller_uuid=session["seller_uuid"],
-        slot=session["relay_slot"],
         public_key=session["public_key"],
         short_id=session["short_id"],
         server_name=session.get("server_name") or "www.google.com",

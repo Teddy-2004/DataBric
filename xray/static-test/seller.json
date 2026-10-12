@@ -1,9 +1,6 @@
 {
-  "log": { "loglevel": "info" },
-  "reverse": {
-    "bridges": [
-      { "tag": "bridge", "domain": "seller.databric.test" }
-    ]
+  "log": {
+    "loglevel": "info"
   },
   "inbounds": [
     {
@@ -11,7 +8,9 @@
       "listen": "127.0.0.1",
       "port": 10818,
       "protocol": "socks",
-      "settings": { "udp": false }
+      "settings": {
+        "udp": false
+      }
     }
   ],
   "outbounds": [
@@ -19,32 +18,38 @@
       "tag": "proxy",
       "protocol": "vless",
       "settings": {
-        "vnext": [
+        "address": "127.0.0.1",
+        "port": 9443,
+        "id": "5e11e200-2222-4ccc-8ddd-000000000002",
+        "encryption": "none",
+        "reverse": {
+          "tag": "r-in"
+        },
+        "servers": [
           {
             "address": "127.0.0.1",
-            "port": 9443,
-            "users": [
-              { "id": "5e11e200-2222-4ccc-8ddd-000000000002", "encryption": "none" }
-            ]
+            "port": 9443
           }
         ]
       }
     },
-    { "tag": "direct", "protocol": "freedom" },
-    { "tag": "block", "protocol": "blackhole" }
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
   ],
   "routing": {
     "domainStrategy": "IPOnDemand",
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["bridge"],
-        "domain": ["full:seller.databric.test"],
-        "outboundTag": "proxy"
-      },
-      {
-        "type": "field",
-        "inboundTag": ["bridge"],
+        "inboundTag": [
+          "r-in"
+        ],
         "ip": [
           "0.0.0.0/8",
           "10.0.0.0/8",
@@ -61,12 +66,16 @@
       },
       {
         "type": "field",
-        "inboundTag": ["bridge"],
+        "inboundTag": [
+          "r-in"
+        ],
         "outboundTag": "direct"
       },
       {
         "type": "field",
-        "inboundTag": ["local-socks"],
+        "inboundTag": [
+          "local-socks"
+        ],
         "outboundTag": "block"
       }
     ]
