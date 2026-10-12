@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:databric/debug/debug_seller_tunnel_card.dart';
 import 'package:databric/models/models.dart';
 import 'package:databric/providers/friends_provider.dart';
+import 'package:databric/screens/friends_screen.dart';
 import 'package:databric/providers/session_provider.dart';
 import 'package:databric/services/xray_service.dart';
 import 'package:databric/theme/app_theme.dart';
 import 'package:databric/widgets/widgets.dart';
 
-// Placeholder until carrier balance API is available.
-const double _kAvailableGb = 10.0;
-const double _kTotalGb = 10.0;
+// Limits a sharer can pick. The backend accepts any value; these keep the
+// choice quick. The sharer's real carrier balance isn't known to the app.
+const List<double> _kLimitOptionsGb = [0.5, 1, 2, 5, 10];
 
 class ShareDataScreen extends StatelessWidget {
   const ShareDataScreen({super.key});
@@ -50,50 +50,35 @@ class _IdleView extends StatefulWidget {
 class _IdleViewState extends State<_IdleView>
     with SingleTickerProviderStateMixin {
   late TabController _tab;
-  double _shareAmountGb = 2.0;
+  double _limitGb = 1;
   Friend? _selectedReceiver;
-  final TextEditingController _amountController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _tab = TabController(length: 2, vsync: this);
-    _amountController.text = _formatGb(_shareAmountGb);
   }
 
   @override
   void dispose() {
-    _amountController.dispose();
     _tab.dispose();
     super.dispose();
   }
 
-  String _formatGb(double value) {
-    final formatted = value.toStringAsFixed(2);
-    return formatted.endsWith('.00') ? formatted.split('.').first : formatted;
-  }
-
-  void _updateAmount(double newValue) {
-    const maxGb = _kAvailableGb;
-    final clamped = newValue.clamp(0.5, maxGb).toDouble();
-    setState(() {
-      _shareAmountGb = clamped;
-      _amountController.text = _formatGb(clamped);
-    });
-  }
-
-  void _onManualInputChanged(String value) {
-    if (value.isEmpty) return;
-    final input = double.tryParse(value);
-    if (input != null) _updateAmount(input);
+  String _formatGb(double gb) {
+    if (gb < 1) return '${(gb * 1024).round()} MB';
+    return gb % 1 == 0 ? '${gb.toInt()} GB' : '${gb.toStringAsFixed(1)} GB';
   }
 
   @override
   Widget build(BuildContext context) {
     final friends = context.watch<FriendsProvider>();
     final session = context.watch<SessionProvider>();
-    const maxGb = _kAvailableGb;
-    final hasFriends = friends.accepted.isNotEmpty;
+    final accepted = friends.accepted;
+    // Drop a selection whose friendship went away (removed, blocked).
+    final selected = accepted
+        .where((f) => f.id == _selectedReceiver?.id)
+        .firstOrNull;
 
     return SafeArea(
       child: Column(
@@ -126,7 +111,7 @@ class _IdleViewState extends State<_IdleView>
                 padding: const EdgeInsets.all(4),
                 tabs: const [
                   Tab(text: 'Share my data'),
-                  Tab(text: "Use friend's data"),
+                  Tab(text: "Use a friend's data"),
                 ],
               ),
             ),
@@ -139,174 +124,99 @@ class _IdleViewState extends State<_IdleView>
                 ListView(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   children: [
-                    SurfaceCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SectionLabel('Available to share'),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              AmountLabel(gb: _kAvailableGb, fontSize: 36),
-                              const Spacer(),
-                              Text('of ${_kTotalGb.toInt()} GB',
-                                  style: Theme.of(context).textTheme.bodyMedium),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(4),
-                            child: LinearProgressIndicator(
-                              value: _kAvailableGb / _kTotalGb,
-                              backgroundColor: AppTheme.border,
-                              valueColor: AlwaysStoppedAnimation(AppTheme.primary),
-                              minHeight: 4,
-                            ),
-                          ),
-                        ],
-                      ),
+                    const _InfoBanner(
+                      icon: Icons.wifi_tethering_rounded,
+                      text: 'Let a friend use your mobile data. Their phone '
+                          'connects through yours until they reach the limit '
+                          'you set.',
                     ),
-                    const SizedBox(height: 24),
-                    SectionLabel('Share with'),
-                    if (!hasFriends)
-                      SurfaceCard(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            children: [
-                              Icon(Icons.people_outline_rounded,
-                                  size: 48, color: AppTheme.textTertiary),
-                              const SizedBox(height: 12),
-                              Text('No friends yet',
-                                  style: Theme.of(context).textTheme.titleMedium),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Add friends to start sharing data',
-                                style: Theme.of(context).textTheme.bodyMedium,
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
-                          ),
-                        ),
+                    const SizedBox(height: 20),
+                    const SectionLabel('1. Who can use it'),
+                    if (friends.isLoading && accepted.isEmpty)
+                      const _LoadingCard()
+                    else if (accepted.isEmpty)
+                      const _NoFriendsCard(
+                        message:
+                            'You can only share data with friends on DataBric.',
                       )
-                    else if (_selectedReceiver != null)
+                    else if (selected != null)
                       _SelectedFriendCard(
-                        friend: _selectedReceiver!,
+                        friend: selected,
                         onClear: () => setState(() => _selectedReceiver = null),
                       )
                     else
-                      _buildFriendPicker(context, friends.accepted),
-                    const SizedBox(height: 16),
-                    if (_selectedReceiver != null) ...[
-                      SectionLabel('How much to share'),
+                      _FriendList(
+                        friends: accepted,
+                        trailing: (_) => const Icon(Icons.chevron_right_rounded,
+                            color: AppTheme.textTertiary),
+                        onTap: (f) => setState(() => _selectedReceiver = f),
+                      ),
+                    if (selected != null) ...[
+                      const SizedBox(height: 24),
+                      const SectionLabel('2. Set a limit'),
                       SurfaceCard(
                         child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                            AmountLabel(gb: _limitGb, fontSize: 36),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
                               children: [
-                                SizedBox(
-                                  width: 140,
-                                  child: TextField(
-                                    controller: _amountController,
-                                    textAlign: TextAlign.center,
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .displayLarge
-                                        ?.copyWith(fontSize: 48, fontWeight: FontWeight.w600),
-                                    decoration: const InputDecoration(
-                                      border: InputBorder.none,
-                                      contentPadding: EdgeInsets.zero,
-                                    ),
-                                    onChanged: _onManualInputChanged,
+                                for (final gb in _kLimitOptionsGb)
+                                  ChoiceChip(
+                                    label: Text(_formatGb(gb)),
+                                    selected: _limitGb == gb,
+                                    onSelected: (_) =>
+                                        setState(() => _limitGb = gb),
+                                    selectedColor: AppTheme.primaryLight,
+                                    showCheckmark: false,
                                   ),
-                                ),
-                                const Text(' GB',
-                                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500)),
                               ],
                             ),
-                            const SizedBox(height: 16),
-                            Row(
-                              children: [
-                                _CircleBtn(
-                                    icon: Icons.remove,
-                                    onTap: () => _updateAmount(_shareAmountGb - 0.5)),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Slider(
-                                    value: _shareAmountGb,
-                                    min: 0.5,
-                                    max: maxGb,
-                                    divisions: ((maxGb - 0.5) / 0.5).round(),
-                                    onChanged: _updateAmount,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                _CircleBtn(
-                                    icon: Icons.add,
-                                    onTap: () => _updateAmount(_shareAmountGb + 0.5)),
-                              ],
+                            const SizedBox(height: 12),
+                            Text(
+                              'Sharing stops by itself when ${selected.shortName} '
+                              'has used ${_formatGb(_limitGb)}. You can stop '
+                              'earlier at any time.',
+                              style: Theme.of(context).textTheme.bodyMedium,
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: AppTheme.primaryLight,
-                          borderRadius: BorderRadius.circular(12),
+                      const SizedBox(height: 20),
+                      if (session.error != null) _ErrorText(session.error!),
+                      ElevatedButton(
+                        onPressed: session.isLoading
+                            ? null
+                            : () => session.startSharing(
+                                  _limitGb,
+                                  receiverId: selected.id,
+                                ),
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size(double.infinity, 52),
                         ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.info_outline_rounded,
-                                size: 18, color: AppTheme.primaryDark),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Only ${_selectedReceiver!.name.split(" ").first} can connect to this session.',
-                                style: const TextStyle(fontSize: 12, color: AppTheme.primaryDark),
-                              ),
-                            ),
-                          ],
-                        ),
+                        child: session.isLoading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white),
+                              )
+                            : Text('Start sharing with ${selected.shortName}'),
                       ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Only ${selected.shortName} can connect. Keep DataBric '
+                        'running and your phone online while sharing.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                        textAlign: TextAlign.center,
+                      ),
+                    ] else if (session.error != null) ...[
                       const SizedBox(height: 16),
+                      _ErrorText(session.error!),
                     ],
-                    if (session.error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Text(session.error!,
-                            style: TextStyle(color: AppTheme.sent, fontSize: 13)),
-                      ),
-                    ElevatedButton(
-                      onPressed: (session.isLoading || _selectedReceiver == null)
-                          ? null
-                          : () => session.startSharing(
-                                _shareAmountGb,
-                                receiverId: _selectedReceiver!.id,
-                              ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor:
-                            _selectedReceiver == null ? AppTheme.border : AppTheme.primary,
-                        minimumSize: const Size(double.infinity, 52),
-                      ),
-                      child: session.isLoading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                            )
-                          : Text(
-                              _selectedReceiver == null
-                                  ? 'Select a friend to continue'
-                                  : 'Share ${_formatGb(_shareAmountGb)}GB with '
-                                      '${_selectedReceiver!.name.split(" ").first}',
-                            ),
-                    ),
-                    const DebugSellerTunnelCard(),
                     const SizedBox(height: 24),
                   ],
                 ),
@@ -318,35 +228,6 @@ class _IdleViewState extends State<_IdleView>
       ),
     );
   }
-
-  Widget _buildFriendPicker(BuildContext context, List<Friend> friends) {
-    return SurfaceCard(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(
-        children: [
-          ...friends.asMap().entries.map((e) {
-            final friend = e.value;
-            final isLast = e.key == friends.length - 1;
-            return Column(
-              children: [
-                ListTile(
-                  leading: FriendAvatar(friend: friend),
-                  title: Text(friend.name,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 14)),
-                  subtitle: Text('${friend.carrier} · ${friend.city}',
-                      style: Theme.of(context).textTheme.bodyMedium),
-                  trailing: const Icon(Icons.chevron_right_rounded, color: AppTheme.textTertiary),
-                  onTap: () => setState(() => _selectedReceiver = friend),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                ),
-                if (!isLast) RowDivider(),
-              ],
-            );
-          }),
-        ],
-      ),
-    );
-  }
 }
 
 class _BuyerTab extends StatelessWidget {
@@ -354,86 +235,195 @@ class _BuyerTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final friends = context.watch<FriendsProvider>().accepted;
+    final friendsProvider = context.watch<FriendsProvider>();
+    final friends = friendsProvider.accepted;
     final session = context.watch<SessionProvider>();
 
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       children: [
-        SectionLabel('Connect to a friend'),
-        Container(
-          padding: const EdgeInsets.all(14),
-          margin: const EdgeInsets.only(bottom: 16),
-          decoration: BoxDecoration(
-            color: AppTheme.blueLight,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.info_outline_rounded, size: 18, color: AppTheme.blue),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Your friend must start sharing and select you before you can connect.',
-                  style: TextStyle(fontSize: 12, color: AppTheme.blue),
-                ),
-              ),
-            ],
-          ),
+        const _InfoBanner(
+          icon: Icons.info_outline_rounded,
+          text: 'Ask a friend to start sharing with you, then tap Connect '
+              'next to their name.',
+          color: AppTheme.blue,
+          background: AppTheme.blueLight,
         ),
-        if (friends.isEmpty)
-          SurfaceCard(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  Icon(Icons.people_outline_rounded, size: 48, color: AppTheme.textTertiary),
-                  const SizedBox(height: 12),
-                  Text('No friends yet', style: Theme.of(context).textTheme.titleMedium),
-                ],
-              ),
-            ),
+        const SizedBox(height: 20),
+        const SectionLabel('Your friends'),
+        if (friendsProvider.isLoading && friends.isEmpty)
+          const _LoadingCard()
+        else if (friends.isEmpty)
+          const _NoFriendsCard(
+            message: "Add the friend whose data you'd like to use.",
           )
         else
-          SurfaceCard(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Column(
-              children: friends.asMap().entries.map((e) {
-                final friend = e.value;
-                final isLast = e.key == friends.length - 1;
-                return Column(
-                  children: [
-                    ListTile(
-                      leading: FriendAvatar(friend: friend),
-                      title: Text(friend.name,
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 14)),
-                      subtitle: Text('${friend.carrier} · ${friend.city}',
-                          style: Theme.of(context).textTheme.bodyMedium),
-                      trailing: ElevatedButton(
-                        onPressed: session.isLoading
-                            ? null
-                            : () => session.connectToFriend(friend.id),
-                        style: ElevatedButton.styleFrom(
-                          minimumSize: const Size(80, 36),
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                        ),
-                        child: const Text('Connect'),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                    ),
-                    if (!isLast) RowDivider(),
-                  ],
-                );
-              }).toList(),
+          _FriendList(
+            friends: friends,
+            trailing: (friend) => ElevatedButton(
+              onPressed: session.isLoading
+                  ? null
+                  : () => session.connectToFriend(friend.id),
+              style: ElevatedButton.styleFrom(
+                minimumSize: const Size(80, 36),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+              ),
+              child: const Text('Connect'),
             ),
           ),
-        if (session.error != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Text(session.error!, style: TextStyle(color: AppTheme.sent, fontSize: 13)),
-          ),
+        if (session.error != null) ...[
+          const SizedBox(height: 12),
+          _ErrorText(session.error!),
+        ],
         const SizedBox(height: 24),
       ],
+    );
+  }
+}
+
+class _InfoBanner extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  final Color color;
+  final Color background;
+
+  const _InfoBanner({
+    required this.icon,
+    required this.text,
+    this.color = AppTheme.primaryDark,
+    this.background = AppTheme.primaryLight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(text, style: TextStyle(fontSize: 13, color: color)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown when there are no accepted friends: says why and offers the way out.
+class _NoFriendsCard extends StatelessWidget {
+  final String message;
+  const _NoFriendsCard({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final waiting = context.watch<FriendsProvider>().outgoingPending;
+    final textTheme = Theme.of(context).textTheme;
+
+    return SurfaceCard(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        child: Column(
+          children: [
+            const Icon(Icons.people_outline_rounded,
+                size: 44, color: AppTheme.textTertiary),
+            const SizedBox(height: 12),
+            Text('Add a friend first', style: textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text(message, style: textTheme.bodyMedium, textAlign: TextAlign.center),
+            if (waiting.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                waiting.length == 1
+                    ? 'Waiting for ${waiting.first.name} to accept your invite.'
+                    : 'Waiting for ${waiting.length} friends to accept your invites.',
+                style: textTheme.bodyMedium?.copyWith(color: AppTheme.amber),
+                textAlign: TextAlign.center,
+              ),
+            ],
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const FriendsScreen()),
+              ),
+              icon: const Icon(Icons.person_add_outlined, size: 18),
+              label: Text(waiting.isEmpty ? 'Add a friend' : 'Manage friends'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LoadingCard extends StatelessWidget {
+  const _LoadingCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return const SurfaceCard(
+      child: Padding(
+        padding: EdgeInsets.all(20),
+        child: Center(child: CircularProgressIndicator()),
+      ),
+    );
+  }
+}
+
+class _FriendList extends StatelessWidget {
+  final List<Friend> friends;
+  final Widget Function(Friend) trailing;
+  final void Function(Friend)? onTap;
+
+  const _FriendList({required this.friends, required this.trailing, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return SurfaceCard(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        children: [
+          for (final (i, friend) in friends.indexed) ...[
+            ListTile(
+              leading: FriendAvatar(friend: friend),
+              title: Text(friend.name,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 14)),
+              subtitle: friend.details.isEmpty
+                  ? null
+                  : Text(friend.details,
+                      style: Theme.of(context).textTheme.bodyMedium),
+              trailing: trailing(friend),
+              onTap: onTap == null ? null : () => onTap!(friend),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            ),
+            if (i < friends.length - 1)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: RowDivider(),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ErrorText extends StatelessWidget {
+  final String text;
+  const _ErrorText(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text(text, style: const TextStyle(color: AppTheme.sent, fontSize: 13)),
     );
   }
 }
@@ -509,7 +499,7 @@ class _ActiveSessionView extends StatelessWidget {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          SectionLabel('Data used'),
+                          const SectionLabel('Data used'),
                           AmountLabel(gb: usedGb, fontSize: 32),
                         ],
                       ),
@@ -517,7 +507,7 @@ class _ActiveSessionView extends StatelessWidget {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          SectionLabel('Limit'),
+                          const SectionLabel('Limit'),
                           AmountLabel(gb: limitGb, fontSize: 32),
                         ],
                       ),
@@ -548,7 +538,7 @@ class _ActiveSessionView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SectionLabel('Upload'),
+                        const SectionLabel('Upload'),
                         Text(_formatBytes(uploadBytes),
                             style: Theme.of(context).textTheme.titleMedium),
                       ],
@@ -561,7 +551,7 @@ class _ActiveSessionView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SectionLabel('Download'),
+                        const SectionLabel('Download'),
                         Text(_formatBytes(downloadBytes),
                             style: Theme.of(context).textTheme.titleMedium),
                       ],
@@ -618,8 +608,9 @@ class _SelectedFriendCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(friend.name, style: Theme.of(context).textTheme.titleMedium),
-                Text('${friend.carrier} · ${friend.city}, ${friend.country}',
-                    style: Theme.of(context).textTheme.bodyMedium),
+                if (friend.details.isNotEmpty)
+                  Text(friend.details,
+                      style: Theme.of(context).textTheme.bodyMedium),
               ],
             ),
           ),
@@ -627,35 +618,11 @@ class _SelectedFriendCard extends StatelessWidget {
             onTap: onClear,
             child: Container(
               padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(color: AppTheme.border, shape: BoxShape.circle),
+              decoration: const BoxDecoration(color: AppTheme.border, shape: BoxShape.circle),
               child: const Icon(Icons.close_rounded, size: 14, color: AppTheme.textSecondary),
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _CircleBtn extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback onTap;
-
-  const _CircleBtn({required this.icon, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: AppTheme.border),
-          color: AppTheme.surface,
-        ),
-        child: Icon(icon, size: 18, color: AppTheme.textPrimary),
       ),
     );
   }

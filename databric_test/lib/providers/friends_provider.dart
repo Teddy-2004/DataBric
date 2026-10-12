@@ -18,25 +18,39 @@ class FriendsProvider extends ChangeNotifier {
   List<Friend> get pending =>
       _friends.where((f) => f.status == FriendStatus.pending).toList();
 
-  /// Pending requests where I am the recipient — actionable.
-  List<Friend> get incomingPending => _friends
-      .where((f) =>
-          f.status == FriendStatus.pending &&
-          f.initiatedBy != null &&
-          f.initiatedBy != _currentUserId)
-      .toList();
+  /// Pending requests someone else sent me — I can accept or decline.
+  /// Empty until we know who "me" is, so my own invites are never shown
+  /// as requests to accept.
+  List<Friend> get incomingPending => _currentUserId == null
+      ? const []
+      : _friends
+          .where((f) =>
+              f.status == FriendStatus.pending &&
+              f.initiatedBy != null &&
+              f.initiatedBy != _currentUserId)
+          .toList();
 
-  /// Pending requests I sent — read-only "waiting" state.
-  List<Friend> get outgoingPending => _friends
-      .where((f) =>
-          f.status == FriendStatus.pending &&
-          f.initiatedBy != null &&
-          f.initiatedBy == _currentUserId)
-      .toList();
+  /// Pending requests I sent — waiting for the other person.
+  List<Friend> get outgoingPending => _currentUserId == null
+      ? const []
+      : _friends
+          .where((f) =>
+              f.status == FriendStatus.pending &&
+              f.initiatedBy == _currentUserId)
+          .toList();
 
   void setCurrentUserId(String? id) {
     if (_currentUserId == id) return;
     _currentUserId = id;
+    notifyListeners();
+  }
+
+  /// Forget everything on sign-out, so the next account starts clean.
+  void clear() {
+    _friends = [];
+    _currentUserId = null;
+    _error = null;
+    _isLoading = false;
     notifyListeners();
   }
 
@@ -55,23 +69,28 @@ class FriendsProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> invite(String phoneNumber) async {
+  /// Returns the backend's message on success (it differs when the number
+  /// isn't on DataBric yet), or null on failure with [error] set.
+  Future<String?> invite(String phoneNumber) async {
     _error = null;
     try {
-      await apiService.inviteFriend(phoneNumber);
-      // Refresh in the background so the new pending row shows up.
+      final message = await apiService.inviteFriend(phoneNumber);
+      // Refresh so the new pending row shows up.
       await loadFriends();
-      return true;
+      return message;
     } catch (e) {
       _error = _parseError(e);
       notifyListeners();
-      return false;
+      return null;
     }
   }
 
   Future<bool> acceptRequest(Friend friend) => _doAction(friend, 'accept');
   Future<bool> blockUser(Friend friend) => _doAction(friend, 'block');
   Future<bool> removeFriend(Friend friend) => _doAction(friend, 'remove');
+  // Declining a request and cancelling my own invite both delete the row.
+  Future<bool> declineRequest(Friend friend) => _doAction(friend, 'remove');
+  Future<bool> cancelInvite(Friend friend) => _doAction(friend, 'remove');
 
   Future<bool> _doAction(Friend friend, String action) async {
     final fid = friend.friendshipId;
@@ -92,8 +111,5 @@ class FriendsProvider extends ChangeNotifier {
     }
   }
 
-  String _parseError(dynamic e) {
-    if (e is Exception) return e.toString().replaceAll('Exception: ', '');
-    return 'Something went wrong. Please try again.';
-  }
+  String _parseError(Object e) => describeApiError(e);
 }

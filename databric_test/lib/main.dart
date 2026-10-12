@@ -64,26 +64,44 @@ class _AppEntry extends StatefulWidget {
 }
 
 class _AppEntryState extends State<_AppEntry> {
+  late final AuthProvider _auth;
+  // The user whose friends and session are loaded. Tracked so that signing
+  // in (from the login screen or at startup), signing out and switching
+  // accounts all rewire the providers exactly once.
+  String? _wiredUserId;
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
+    _auth = context.read<AuthProvider>();
+    _auth.addListener(_onAuthChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _auth.checkAuth());
   }
 
-  Future<void> _bootstrap() async {
-    final auth = context.read<AuthProvider>();
-    await auth.checkAuth();
-    if (!auth.isAuthenticated || !mounted) return;
+  @override
+  void dispose() {
+    _auth.removeListener(_onAuthChanged);
+    super.dispose();
+  }
 
+  void _onAuthChanged() {
+    if (!mounted) return;
+    final userId = _auth.isAuthenticated ? _auth.userId : null;
+    if (userId == _wiredUserId) return;
+    _wiredUserId = userId;
+
+    final friends = context.read<FriendsProvider>();
+    if (userId == null) {
+      friends.clear();
+      return;
+    }
     // Wire post-auth state in the background. None of these should block
     // the home screen from rendering.
-    final friends = context.read<FriendsProvider>();
-    final session = context.read<SessionProvider>();
-    friends.setCurrentUserId(auth.userId);
+    friends.setCurrentUserId(userId);
     // ignore: unawaited_futures
     friends.loadFriends();
     // ignore: unawaited_futures
-    session.restoreActive();
+    context.read<SessionProvider>().restoreActive();
   }
 
   @override

@@ -2,6 +2,34 @@ import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/foundation.dart';
 
+/// A message fit to show a user for an error from an API call: the
+/// backend's own `detail` when it sent one, otherwise a plain description.
+String describeApiError(Object e) {
+  if (e is DioException) {
+    final data = e.response?.data;
+    if (data is Map && data['detail'] != null) {
+      final detail = data['detail'];
+      // FastAPI validation errors arrive as a list of {msg: ...}.
+      if (detail is List && detail.isNotEmpty && detail.first is Map) {
+        return (detail.first['msg'] ?? 'Please check what you entered.').toString();
+      }
+      return detail.toString();
+    }
+    switch (e.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.sendTimeout:
+        return 'The server took too long to answer. Please try again.';
+      case DioExceptionType.connectionError:
+        return 'No connection to the server. Check your internet and try again.';
+      default:
+        return 'Something went wrong. Please try again.';
+    }
+  }
+  if (e is Exception) return e.toString().replaceAll('Exception: ', '');
+  return 'Something went wrong. Please try again.';
+}
+
 /// Central API client for all DataBric backend calls.
 /// Uses Dio with automatic JWT injection and error handling.
 class ApiService {
@@ -108,8 +136,14 @@ class ApiService {
     return List<Map<String, dynamic>>.from(resp.data as List);
   }
 
-  Future<void> inviteFriend(String phoneNumber) async {
-    await _dio.post('/friends/invite', data: {'phone_number': phoneNumber});
+  /// Returns the backend's message ("Friend request sent…" or "not
+  /// registered on DataBric yet…").
+  Future<String> inviteFriend(String phoneNumber) async {
+    final resp =
+        await _dio.post('/friends/invite', data: {'phone_number': phoneNumber});
+    final data = resp.data;
+    return (data is Map ? data['message'] : null)?.toString() ??
+        'Invite sent to $phoneNumber';
   }
 
   Future<void> friendAction(String friendshipId, String action) async {

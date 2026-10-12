@@ -55,6 +55,19 @@ class Friend {
     }
   }
 
+  /// "Safaricom · Nairobi, KE", leaving out whatever we don't know. Falls
+  /// back to the phone number when the name already is the phone number.
+  String get details {
+    final place = [city, country].where((s) => s.isNotEmpty).join(', ');
+    final parts = [carrier, place].where((s) => s.isNotEmpty).toList();
+    if (parts.isNotEmpty) return parts.join(' · ');
+    return name == phoneNumber ? '' : phoneNumber;
+  }
+
+  /// First name for short labels ("Share with Abel"), or the full phone.
+  String get shortName =>
+      name == phoneNumber ? phoneNumber : name.trim().split(' ').first;
+
   String get initials {
     if (name.isEmpty) return '?';
     final parts = name.trim().split(' ');

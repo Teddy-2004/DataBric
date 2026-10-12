@@ -42,16 +42,16 @@ class _FriendsScreenState extends State<FriendsScreen> {
       _inviteError = null;
     });
     final friends = context.read<FriendsProvider>();
-    final ok = await friends.invite(phone);
+    final message = await friends.invite(phone);
     if (!mounted) return;
     setState(() => _isInviting = false);
 
-    if (ok) {
+    if (message != null) {
       _inviteController.clear();
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Invite sent to $phone'),
+          content: Text(message),
           backgroundColor: AppTheme.primary,
           behavior: SnackBarBehavior.floating,
         ),
@@ -61,19 +61,21 @@ class _FriendsScreenState extends State<FriendsScreen> {
     }
   }
 
-  Future<void> _acceptFriend(Friend friend) async {
+  Future<void> _run(Future<bool> Function(FriendsProvider) action, String failure) async {
     final friends = context.read<FriendsProvider>();
-    final ok = await friends.acceptRequest(friend);
-    if (!mounted) return;
-    if (!ok) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(friends.error ?? 'Could not accept'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
+    final ok = await action(friends);
+    if (!mounted || ok) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(friends.error ?? failure),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
+
+  void _acceptFriend(Friend f) => _run((p) => p.acceptRequest(f), 'Could not accept');
+  void _declineFriend(Friend f) => _run((p) => p.declineRequest(f), 'Could not decline');
+  void _cancelInvite(Friend f) => _run((p) => p.cancelInvite(f), 'Could not cancel the invite');
 
   void _showInviteSheet() {
     showModalBottomSheet(
@@ -158,12 +160,12 @@ class _FriendsScreenState extends State<FriendsScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           children: [
             if (incoming.isNotEmpty) ...[
-              const SectionLabel('Incoming requests'),
+              const SectionLabel('Requests for you'),
               _pendingCard(context, incoming, actionable: true),
               const SizedBox(height: 24),
             ],
             if (outgoing.isNotEmpty) ...[
-              const SectionLabel('Sent'),
+              const SectionLabel('Waiting for them to accept'),
               _pendingCard(context, outgoing, actionable: false),
               const SizedBox(height: 24),
             ],
@@ -219,16 +221,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
                                   .textTheme
                                   .titleMedium
                                   ?.copyWith(fontSize: 14)),
-                          subtitle: Text(
-                            '${friend.carrier} · ${friend.city}, ${friend.country}'
-                                .trim(),
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                          trailing: const Icon(Icons.chevron_right_rounded,
-                              color: AppTheme.textTertiary),
+                          subtitle: friend.details.isEmpty
+                              ? null
+                              : Text(
+                                  friend.details,
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                ),
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 16, vertical: 4),
-                          onTap: () {},
                         ),
                         if (!isLast)
                           const Padding(
@@ -246,6 +246,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
       ),
     );
   }
+
+  ButtonStyle _smallButton(Color fg, {Color? bg}) => TextButton.styleFrom(
+        backgroundColor: bg,
+        foregroundColor: fg,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      );
 
   Widget _pendingCard(BuildContext context, List<Friend> rows, {required bool actionable}) {
     return SurfaceCard(
@@ -271,28 +279,32 @@ class _FriendsScreenState extends State<FriendsScreen> {
                                   .textTheme
                                   .titleMedium
                                   ?.copyWith(fontSize: 14)),
-                          Text(friend.phoneNumber,
+                          Text(
+                              actionable
+                                  ? 'Wants to be friends'
+                                  : 'Invite sent',
                               style: Theme.of(context).textTheme.bodyMedium),
                         ],
                       ),
                     ),
-                    if (actionable)
+                    if (actionable) ...[
+                      TextButton(
+                        onPressed: () => _declineFriend(friend),
+                        style: _smallButton(AppTheme.textSecondary),
+                        child: const Text('Decline', style: TextStyle(fontSize: 12)),
+                      ),
+                      const SizedBox(width: 6),
                       TextButton(
                         onPressed: () => _acceptFriend(friend),
-                        style: TextButton.styleFrom(
-                          backgroundColor: AppTheme.primaryLight,
-                          foregroundColor: AppTheme.primaryDark,
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
+                        style: _smallButton(AppTheme.primaryDark,
+                            bg: AppTheme.primaryLight),
                         child: const Text('Accept', style: TextStyle(fontSize: 12)),
-                      )
-                    else
-                      const StatusBadge(
-                        label: 'Pending',
-                        bg: AppTheme.amberLight,
-                        fg: AppTheme.amber,
+                      ),
+                    ] else
+                      TextButton(
+                        onPressed: () => _cancelInvite(friend),
+                        style: _smallButton(AppTheme.textSecondary),
+                        child: const Text('Cancel', style: TextStyle(fontSize: 12)),
                       ),
                   ],
                 ),

@@ -277,7 +277,7 @@ class _ActiveSessionBanner extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppTheme.primaryLight,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.primary.withOpacity(0.3)),
+        border: Border.all(color: AppTheme.primary.withValues(alpha: 0.3)),
       ),
       child: Row(
         children: [
@@ -314,7 +314,7 @@ class _ActiveSessionBanner extends StatelessWidget {
               width: 60,
               child: LinearProgressIndicator(
                 value: usagePercent,
-                backgroundColor: AppTheme.primary.withOpacity(0.2),
+                backgroundColor: AppTheme.primary.withValues(alpha: 0.2),
                 valueColor: const AlwaysStoppedAnimation(AppTheme.primary),
                 minHeight: 6,
               ),

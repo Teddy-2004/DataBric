@@ -26,10 +26,13 @@ class FriendAvatar extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(color: _bgColor(), shape: BoxShape.circle),
       child: Center(
-        child: Text(
-          friend.initials,
-          style: TextStyle(fontSize: size * 0.35, fontWeight: FontWeight.w500, color: _fgColor()),
-        ),
+        // No display name yet: a person icon reads better than "+".
+        child: friend.name == friend.phoneNumber
+            ? Icon(Icons.person_rounded, size: size * 0.5, color: _fgColor())
+            : Text(
+                friend.initials,
+                style: TextStyle(fontSize: size * 0.35, fontWeight: FontWeight.w500, color: _fgColor()),
+              ),
       ),
     );
   }

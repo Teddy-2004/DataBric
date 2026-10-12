@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:databric/debug/debug_seller_tunnel_card.dart';
 import 'package:provider/provider.dart';
 import 'package:databric/providers/auth_provider.dart';
 import 'package:databric/providers/session_provider.dart';
@@ -196,6 +198,13 @@ class ProfileScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 32),
+
+          // Developer tools: debug builds only, never in a release build.
+          if (kDebugMode) ...[
+            const SectionLabel('Developer (debug builds only)'),
+            const DebugSellerTunnelCard(),
+            const SizedBox(height: 32),
+          ],
         ],
       ),
     );

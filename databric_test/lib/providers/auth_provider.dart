@@ -103,8 +103,5 @@ class AuthProvider extends ChangeNotifier {
     );
   }
 
-  String _parseError(dynamic e) {
-    if (e is Exception) return e.toString().replaceAll('Exception: ', '');
-    return 'Something went wrong. Please try again.';
-  }
+  String _parseError(Object e) => describeApiError(e);
 }

@@ -77,7 +77,7 @@ async def invite_friend(
     # Check if friendship already exists
     existing = await fetchrow(
         """
-        SELECT id, status FROM friendships
+        SELECT id, status, initiated_by FROM friendships
         WHERE (user_a_id = $1 AND user_b_id = $2)
            OR (user_a_id = $2 AND user_b_id = $1)
         """,
@@ -89,6 +89,11 @@ async def invite_friend(
         if ex["status"] == "accepted":
             raise HTTPException(status_code=400, detail="Already friends")
         if ex["status"] == "pending":
+            if ex["initiated_by"] == target["id"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="They already invited you. Accept their request in Friends.",
+                )
             raise HTTPException(status_code=400, detail="Invitation already sent")
         if ex["status"] == "blocked":
             raise HTTPException(status_code=400, detail="Cannot invite this user")
