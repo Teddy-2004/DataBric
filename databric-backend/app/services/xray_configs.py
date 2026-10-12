@@ -22,6 +22,12 @@ import json
 
 SELLER_LOCAL_SOCKS_PORT = 10818  # unused locally; the plugin refuses configs without an inbound
 REVERSE_INBOUND_TAG = "r-in"  # where buyer traffic enters the seller's routing
+DNS_TAG = "dns-query"  # Xray's own DNS lookups, routed straight out
+
+# Buyers' connections arrive as names (Chrome, sniffing), which the seller's
+# Xray must resolve. Without servers here it uses Go's system resolver, which
+# on Android has no /etc/resolv.conf and fails every lookup.
+DNS_SERVERS = ["1.1.1.1", "8.8.8.8"]
 
 # Destinations a buyer must never reach through a seller's phone: the phone
 # itself, the seller's home or office LAN, carrier-internal ranges. Xray 26's
@@ -87,14 +93,23 @@ def generate_seller_bridge_config(
                     },
                 },
             },
-            {"tag": "direct", "protocol": "freedom"},
+            {
+                "tag": "direct",
+                "protocol": "freedom",
+                # Resolve names with the DNS servers above (IPv4 first).
+                "streamSettings": {"sockopt": {"domainStrategy": "UseIPv4v6"}},
+            },
             {"tag": "block", "protocol": "blackhole"},
         ],
+        "dns": {"tag": DNS_TAG, "servers": DNS_SERVERS},
         "routing": {
             # Resolve domains before the private-range rule, so a hostname
             # pointing at 192.168.x.x is blocked too.
             "domainStrategy": "IPOnDemand",
             "rules": [
+                # DNS queries go straight out, not back into the tunnel (the
+                # first outbound, and so the default).
+                {"type": "field", "inboundTag": [DNS_TAG], "outboundTag": "direct"},
                 {
                     "type": "field",
                     "inboundTag": [REVERSE_INBOUND_TAG],

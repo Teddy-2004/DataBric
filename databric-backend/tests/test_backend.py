@@ -354,11 +354,21 @@ def test_seller_config_is_a_vless_reverse_tunnel_that_blocks_private_ranges():
     assert vless["reverse"] == {"tag": "r-in"}
     assert "reverse" not in c  # Xray 26 rejects the old reverse section
     rules = c["routing"]["rules"]
-    private = rules[0]
+    private = rules[1]
     assert private["inboundTag"] == ["r-in"] and private["outboundTag"] == "block"
     assert "192.168.0.0/16" in private["ip"]
-    assert rules[1] == {"type": "field", "inboundTag": ["r-in"], "outboundTag": "direct"}
+    assert rules[2] == {"type": "field", "inboundTag": ["r-in"], "outboundTag": "direct"}
     assert c["routing"]["domainStrategy"] == "IPOnDemand"
+
+
+def test_seller_config_resolves_names_itself():
+    """Android has no /etc/resolv.conf, so Xray must not rely on the system
+    resolver, and its own lookups must not go back into the tunnel."""
+    c = _seller_config()
+    assert c["dns"]["servers"] and c["dns"]["tag"] == "dns-query"
+    assert c["routing"]["rules"][0] == {"type": "field", "inboundTag": ["dns-query"], "outboundTag": "direct"}
+    direct = next(o for o in c["outbounds"] if o["tag"] == "direct")
+    assert direct["streamSettings"]["sockopt"]["domainStrategy"] == "UseIPv4v6"
 
 
 def test_relay_agent_adds_sellers_with_their_reverse_tag():
