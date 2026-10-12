@@ -31,6 +31,16 @@ android {
         versionName = flutter.versionName
     }
 
+    // flutter_v2ray's VPN mode (buyers) runs libtun2socks.so as a separate
+    // program from the app's native-library folder. Newer Android builds
+    // leave native libraries packed inside the APK, so that file wouldn't
+    // exist: the VPN would come up but pass no traffic. Unpack them.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.

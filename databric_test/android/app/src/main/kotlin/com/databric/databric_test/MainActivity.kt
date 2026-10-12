@@ -18,6 +18,7 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "endTunnelProcess" -> result.success(endTunnelProcess())
                     "isTunnelProcessAlive" -> result.success(tunnelPids().isNotEmpty())
+                    "packageName" -> result.success(packageName)
                     else -> result.notImplemented()
                 }
             }

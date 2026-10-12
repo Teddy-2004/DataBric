@@ -146,15 +146,20 @@ double get limitGb {
 
   Future<void> disconnect() async {
     _isLoading = true;
+    _error = null;
     notifyListeners();
+    // Stop the tunnel on this phone first: it is what the user asked for,
+    // and it must not depend on reaching the backend.
+    _stopPolling();
+    await xrayService.stopTunnel();
+    _role = SessionRole.none;
+    _activeSession = null;
     try {
       await apiService.disconnect();
-      await xrayService.stopTunnel();
-      _role = SessionRole.none;
-      _activeSession = null;
-      _stopPolling();
     } catch (e) {
-      _error = _parseError(e);
+      // The backend also ends the session when the seller stops or the
+      // limit is hit; nothing here needs the user to retry.
+      debugPrint('[SessionProvider] backend disconnect failed: $e');
     } finally {
       _isLoading = false;
       notifyListeners();

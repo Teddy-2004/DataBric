@@ -143,10 +143,18 @@ class XrayService extends ChangeNotifier {
       // Parse the VLESS URI into a V2RayURL object.
       final v2rayUrl = FlutterV2ray.parseFromURL(vlessUri);
 
+      // Keep DataBric itself out of the VPN: its calls to the backend
+      // (disconnect, "has the session ended?") must work even when the
+      // tunnel doesn't. The core shares this app's identity, and its own
+      // connection to the relay must bypass the VPN anyway.
+      final ownPackage =
+          await _tunnelProcess.invokeMethod<String>('packageName');
+
       // Start the VPN service with the parsed config.
       await _v2ray.startV2Ray(
         remark: 'DataBric session $sessionId',
         config: v2rayUrl.getFullConfiguration(),
+        blockedApps: ownPackage == null ? null : [ownPackage],
         proxyOnly: false, // use full VPN mode
       );
 
