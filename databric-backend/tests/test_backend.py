@@ -394,3 +394,127 @@ def test_start_sharing_when_relay_full_returns_503():
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 503
+
+
+# ── Relay agent: usage metering and reporting ──────────────────
+import urllib.error
+
+
+class _FakeXray:
+    def __init__(self):
+        self.traffic = {}
+        self.removed = []
+
+    def buyer_traffic(self):
+        return dict(self.traffic)
+
+    def remove_rules(self, tags):
+        self.removed += list(tags)
+
+    def remove_user(self, tag, email):
+        self.removed.append(email)
+        return True
+
+
+class _FakeBackend:
+    def __init__(self):
+        self.calls = []        # (session_id, bytes_delta, heartbeat_id) attempts
+        self.behaviour = "ok"  # "ok" | "down" | "refuse" | "terminate"
+
+    def report_usage(self, session_id, bytes_delta, heartbeat_id):
+        self.calls.append((session_id, bytes_delta, heartbeat_id))
+        if self.behaviour == "down":
+            raise urllib.error.URLError("connection refused")
+        if self.behaviour == "refuse":
+            raise urllib.error.HTTPError("u", 500, "err", {}, None)
+        return {"terminate": self.behaviour == "terminate"}
+
+    def live_sessions(self, node_id):
+        return []
+
+
+def _agent(tmp_path, xray=None, backend=None):
+    ra = _load_relay_agent()
+    s = ra.load_settings(None)
+    s["STATE_FILE"] = str(tmp_path / "state.json")
+    agent = ra.Agent(s, xray or _FakeXray(), backend or _FakeBackend(), ra.SellerConnections("/nonexistent"))
+    return ra, agent
+
+
+def test_parse_user_traffic_sums_up_and_down():
+    ra = _load_relay_agent()
+    out = json.dumps({"stat": [
+        {"name": "user>>>b-1>>>traffic>>>uplink", "value": "100"},
+        {"name": "user>>>b-1>>>traffic>>>downlink", "value": 900},
+        {"name": "user>>>b-2>>>traffic>>>downlink"},  # zero values omit "value"
+        {"name": "inbound>>>buyer-in>>>traffic>>>uplink", "value": 5},
+    ]})
+    assert ra.parse_user_traffic(out) == {"b-1": 1000, "b-2": 0}
+    assert ra.parse_user_traffic("") == {}
+
+
+def test_usage_retries_keep_heartbeat_id_and_never_double_count(tmp_path):
+    xray, backend = _FakeXray(), _FakeBackend()
+    ra, agent = _agent(tmp_path, xray, backend)
+    agent.applied = {"s1": {"slot": 1}}
+    xray.traffic = {"b-s1": 1000}
+    agent.meter()
+    backend.behaviour = "down"
+    agent.flush_usage()
+    agent.flush_usage()
+    assert len(agent.outbox) == 1
+    first_id = agent.outbox[0]["heartbeat_id"]
+    assert {c[2] for c in backend.calls} == {first_id}  # retried with the same id
+
+    xray.traffic = {"b-s1": 1500}
+    agent.meter()
+    backend.behaviour = "ok"
+    agent.flush_usage()
+    assert agent.outbox == []
+    delivered = [c for c in backend.calls[-2:]]
+    assert [c[1] for c in delivered] == [1000, 500]
+    assert delivered[0][2] == first_id
+
+
+def test_queued_usage_survives_agent_restart(tmp_path):
+    xray, backend = _FakeXray(), _FakeBackend()
+    ra, agent = _agent(tmp_path, xray, backend)
+    agent.applied = {"s1": {"slot": 1}}
+    xray.traffic = {"b-s1": 4096}
+    agent.meter()
+    queued = list(agent.outbox)
+    _, restarted = _agent(tmp_path, xray, backend)
+    assert restarted.outbox == queued
+    assert restarted.applied["s1"]["counted"] == 4096
+
+
+def test_counter_reset_counts_only_new_traffic(tmp_path):
+    xray = _FakeXray()
+    ra, agent = _agent(tmp_path, xray)
+    agent.applied = {"s1": {"slot": 1, "counted": 5000}}
+    xray.traffic = {"b-s1": 300}  # Xray restarted, counters began again
+    agent.meter()
+    assert [i["bytes_delta"] for i in agent.outbox] == [300]
+
+
+def test_refused_report_is_dropped_after_max_attempts(tmp_path):
+    xray, backend = _FakeXray(), _FakeBackend()
+    ra, agent = _agent(tmp_path, xray, backend)
+    agent.applied = {"s1": {"slot": 1}}
+    xray.traffic = {"b-s1": 10}
+    agent.meter()
+    backend.behaviour = "refuse"
+    for _ in range(agent.MAX_REPORT_ATTEMPTS):
+        agent.flush_usage()
+    assert agent.outbox == []  # dropped, so it cannot block later reports
+
+
+def test_backend_ending_a_session_removes_it_at_once(tmp_path):
+    xray, backend = _FakeXray(), _FakeBackend()
+    ra, agent = _agent(tmp_path, xray, backend)
+    agent.applied = {"s1": {"slot": 1}}
+    xray.traffic = {"b-s1": 10}
+    backend.behaviour = "terminate"
+    agent.cycle()
+    assert "s1" not in agent.applied
+    assert "b-s1" in xray.removed and "s-s1" in xray.removed

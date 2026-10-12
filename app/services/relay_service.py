@@ -355,14 +355,17 @@ async def process_usage_heartbeat(
                     "usage_percent": usage_percent,
                     "status": s["status"],
                     "terminate": s["status"] in ("ended", "terminated"),
-                    "warn": usage_percent >= settings.SESSION_WARNING_THRESHOLD,
+                    "warn": False,  # the original delivery already decided this
                     "deduped": True,
                 }
 
+            # used_bytes is capped at the limit: a report can overshoot it by
+            # several MB (traffic between reports), and the table only allows
+            # 1 MB over. The full amount is still in usage_events.
             session = await conn.fetchrow(
                 """
                 UPDATE sharing_sessions
-                SET used_bytes = used_bytes + $2,
+                SET used_bytes = LEAST(used_bytes + $2, limit_bytes),
                     status = CASE
                         WHEN used_bytes + $2 >= limit_bytes THEN 'ended'
                         WHEN status = 'connected' THEN 'transferring'
@@ -386,16 +389,21 @@ async def process_usage_heartbeat(
         return {"terminate": True, "reason": "session_not_found"}
 
     s = dict(session)
-    usage_percent = s["used_bytes"] / s["limit_bytes"] if s["limit_bytes"] > 0 else 0
+    limit = s["limit_bytes"]
+    usage_percent = s["used_bytes"] / limit if limit > 0 else 0
+    before_percent = (s["used_bytes"] - bytes_delta) / limit if limit > 0 else 0
+    terminate = s["status"] in ("ended", "terminated")
 
     return {
         "session_id": str(session_id),
         "used_bytes": s["used_bytes"],
-        "limit_bytes": s["limit_bytes"],
+        "limit_bytes": limit,
         "usage_percent": usage_percent,
         "status": s["status"],
-        "terminate": s["status"] in ("ended", "terminated"),
-        "warn": usage_percent >= settings.SESSION_WARNING_THRESHOLD,
+        "terminate": terminate,
+        # Only on the report that crosses the threshold, not on every one after.
+        "warn": (not terminate
+                 and before_percent < settings.SESSION_WARNING_THRESHOLD <= usage_percent),
     }
 
 

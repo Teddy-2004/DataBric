@@ -12,6 +12,9 @@ with the backend:
       - adds routing rules binding them to the session's reverse-proxy slot
       - on session end, removes all of that and cuts the seller's open
         connections, so the slot is clean for the next session
+  * meters each session's traffic (the buyer's bytes through the relay) and
+    reports it to the backend (POST /relay/usage), which ends the session
+    when the seller's data limit is reached
   * `render-config` prints the Xray config this agent expects to manage
 
 Why slots: the reverse proxy entry points ("portals") of Xray v25.3.6 can only
@@ -44,6 +47,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -296,11 +300,33 @@ class XrayApi:
             except RuntimeError as e:
                 log.debug("remove_rules %s: %s", tag, e)
 
-    def _cli(self, args: list):
+    def buyer_traffic(self) -> dict:
+        """Cumulative bytes (up + down) per buyer email since Xray started."""
+        out = self._cli(["statsquery", "-pattern", "user>>>b-"])
+        return parse_user_traffic(out)
+
+    def _cli(self, args: list) -> str:
         cmd = [self.xray_bin, "api", args[0], f"--server={self.api_addr}", *args[1:]]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if r.returncode != 0:
             raise RuntimeError(f"{' '.join(args[:2])} failed: {(r.stderr or r.stdout).strip()}")
+        return r.stdout
+
+
+def parse_user_traffic(output: str) -> dict:
+    """
+    Sums `xray api statsquery` user counters per email.
+    Counter names look like user>>>EMAIL>>>traffic>>>uplink (or downlink).
+    """
+    totals: dict[str, int] = {}
+    output = output.strip()
+    if not output:
+        return totals
+    for stat in json.loads(output).get("stat", []) or []:
+        parts = str(stat.get("name", "")).split(">>>")
+        if len(parts) == 4 and parts[0] == "user" and parts[2] == "traffic":
+            totals[parts[1]] = totals.get(parts[1], 0) + int(stat.get("value") or 0)
+    return totals
 
 
 # ── Seller connections, read from Xray's access log ─────────────────────────
@@ -443,6 +469,14 @@ class Backend:
         q = urllib.parse.urlencode({"node_id": node_id})
         return self._req("GET", f"/relay/sessions?{q}").get("sessions", [])
 
+    def report_usage(self, session_id: str, bytes_delta: int, heartbeat_id: str) -> dict:
+        # The backend ignores a repeated heartbeat_id, so retries never double count.
+        return self._req("POST", "/relay/usage", {
+            "session_id": session_id,
+            "bytes_delta": bytes_delta,
+            "heartbeat_id": heartbeat_id,
+        })
+
 
 def _cpu_percent() -> float:
     try:
@@ -491,8 +525,12 @@ class Agent:
     def __init__(self, s: dict, api: XrayApi, backend: Backend, conns: SellerConnections):
         self.s, self.api, self.backend, self.conns = s, api, backend, conns
         self.state_path = Path(s["STATE_FILE"])
+        # session id -> {"slot": int, "counted": bytes already queued for reporting}
         self.applied: dict[str, dict] = {}
         self.xray_pid: int | None = None
+        # Usage reports not yet accepted by the backend, oldest first. Each keeps
+        # its heartbeat_id across retries and agent restarts.
+        self.outbox: list[dict] = []
         self._load_state()
 
     def _load_state(self):
@@ -500,14 +538,85 @@ class Agent:
             st = json.loads(self.state_path.read_text())
             self.applied = st.get("sessions", {})
             self.xray_pid = st.get("xray_pid")
+            self.outbox = st.get("outbox", [])
         except (FileNotFoundError, ValueError):
             pass
 
     def _save_state(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"xray_pid": self.xray_pid, "sessions": self.applied}))
+        tmp.write_text(json.dumps({
+            "xray_pid": self.xray_pid, "sessions": self.applied, "outbox": self.outbox,
+        }))
         tmp.replace(self.state_path)
+
+    # ── usage metering ──
+
+    MAX_REPORT_ATTEMPTS = 20  # a report the backend keeps refusing is dropped
+
+    def meter(self):
+        """Queue each live session's new traffic since the last reading."""
+        if not self.applied:
+            return
+        totals = self.api.buyer_traffic()
+        changed = False
+        for sid, st in self.applied.items():
+            total = totals.get(buyer_email(sid))
+            if total is None:
+                continue  # no traffic yet
+            counted = st.get("counted", 0)
+            if total < counted:
+                counted = 0  # Xray's counters restarted from zero
+            if total > counted:
+                self.outbox.append({
+                    "session_id": sid,
+                    "bytes_delta": total - counted,
+                    "heartbeat_id": str(uuid.uuid4()),
+                    "attempts": 0,
+                })
+                st["counted"] = total
+                changed = True
+        if changed:
+            # Saved before sending: a crash mid-send resends the same
+            # heartbeat_id instead of counting the bytes again.
+            self._save_state()
+
+    def flush_usage(self) -> set:
+        """Sends queued reports. Returns sessions the backend says have ended."""
+        ended = set()
+        while self.outbox:
+            item = self.outbox[0]
+            try:
+                resp = self.backend.report_usage(item["session_id"], item["bytes_delta"], item["heartbeat_id"])
+            except urllib.error.HTTPError as e:
+                item["attempts"] = item.get("attempts", 0) + 1
+                if item["attempts"] < self.MAX_REPORT_ATTEMPTS:
+                    log.warning("usage report for %s refused (%s); will retry", item["session_id"], e.code)
+                    self._save_state()
+                    break
+                log.error("dropping usage report for %s (%d bytes) after %d refusals: %s",
+                          item["session_id"], item["bytes_delta"], item["attempts"], e)
+            except (urllib.error.URLError, OSError) as e:
+                log.warning("could not report usage, will retry: %s", e)
+                break
+            else:
+                if resp.get("terminate"):
+                    ended.add(item["session_id"])
+            self.outbox.pop(0)
+            self._save_state()
+        return ended
+
+    def cycle(self):
+        """One round: meter, report, then bring Xray in line with the backend."""
+        try:
+            self.meter()
+        except Exception as e:
+            log.warning("could not read traffic counters: %s", e)
+        for sid in self.flush_usage():
+            if sid in self.applied:
+                log.info("session %s ended by the backend (limit reached or stopped)", sid)
+                self._remove(sid)
+        self.sync(self.backend.live_sessions(self.s["NODE_ID"]))
 
     def sync(self, live: list):
         pid = xray_pid()
@@ -578,7 +687,7 @@ class Agent:
         next_heartbeat = 0.0
         while not stop.is_set():
             try:
-                self.sync(self.backend.live_sessions(self.s["NODE_ID"]))
+                self.cycle()
             except urllib.error.URLError as e:
                 log.warning("could not reach backend: %s", e)
             except Exception:
