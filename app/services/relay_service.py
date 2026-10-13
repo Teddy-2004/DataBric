@@ -448,6 +448,38 @@ def build_seller_config(session: dict) -> str:
     )
 
 
+def build_buyer_uri(session: dict) -> str:
+    """
+    The buyer's VLESS link for a session, from the session's buyer
+    credentials and its relay's address and keys (as joined by
+    get_active_session_for_seller / get_active_session_for_buyer).
+    """
+    return generate_vless_reality_uri(
+        user_uuid=session["vless_uuid"],
+        host=session["host"],
+        port=session["port"],
+        public_key=session["public_key"],
+        short_id=session["short_id"],
+        server_name=session.get("server_name") or "www.google.com",
+    )
+
+
+async def get_active_session_for_buyer(buyer_id: uuid.UUID) -> dict | None:
+    row = await fetchrow(
+        """
+        SELECT s.*, rn.host, rn.port, rn.public_key, rn.server_name, rn.seller_port
+        FROM sharing_sessions s
+        JOIN relay_nodes rn ON rn.id = s.relay_node_id
+        WHERE s.buyer_id = $1
+        AND s.status IN ('connected', 'transferring')
+        ORDER BY s.started_at DESC
+        LIMIT 1
+        """,
+        buyer_id
+    )
+    return dict(row) if row else None
+
+
 async def get_active_session_for_seller(seller_id: uuid.UUID) -> dict | None:
     row = await fetchrow(
         """

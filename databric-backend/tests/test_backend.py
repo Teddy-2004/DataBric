@@ -637,3 +637,57 @@ def test_seller_config_endpoint_404_without_a_restorable_session():
             assert client.get("/sessions/seller-config", headers=_OWN_RATE_BUCKET).status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+# ── Restoring the buyer's VPN ──────────────────────────────────
+def _buyer_session_row(**overrides):
+    row = {
+        "id": uuid.uuid4(), "status": "transferring", "relay_slot": 5,
+        "seller_id": uuid.uuid4(), "buyer_id": uuid.uuid4(),
+        "vless_uuid": "b0a1c2d3-1111-4aaa-8bbb-000000000009", "short_id": "a1b2c3d4",
+        "host": "relay1.databric.app", "port": 8443, "seller_port": 9443,
+        "public_key": "pbk123", "server_name": "www.google.com",
+        "used_bytes": 1024, "limit_bytes": 1073741824,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_buyer_config_endpoint_returns_the_same_link_as_connect():
+    _as_seller()  # any signed-in user; the lookup is patched to their buyer session
+    row = _buyer_session_row()
+    try:
+        with patch("app.api.sessions.get_active_session_for_buyer", new_callable=AsyncMock, return_value=row):
+            resp = client.get("/sessions/buyer-config", headers=_OWN_RATE_BUCKET)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["session_id"] == str(row["id"])
+    assert body["vless_uri"] == generate_vless_reality_uri(
+        user_uuid=row["vless_uuid"], host="relay1.databric.app", port=8443,
+        public_key="pbk123", short_id="a1b2c3d4", server_name="www.google.com")
+
+
+def test_buyer_config_endpoint_404_without_a_live_connection():
+    _as_seller()
+    try:
+        with patch("app.api.sessions.get_active_session_for_buyer", new_callable=AsyncMock, return_value=None):
+            assert client.get("/sessions/buyer-config", headers=_OWN_RATE_BUCKET).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_active_session_for_a_buyer_leaks_no_credentials():
+    _as_seller()
+    row = _buyer_session_row()
+    try:
+        with patch("app.api.sessions.get_active_session_for_seller", new_callable=AsyncMock, return_value=None), \
+             patch("app.api.sessions.get_active_session_for_buyer", new_callable=AsyncMock, return_value=row):
+            resp = client.get("/sessions/active", headers=_OWN_RATE_BUCKET)
+    finally:
+        app.dependency_overrides.clear()
+    body = resp.json()
+    assert body["role"] == "buyer" and body["session"]["id"] == str(row["id"])
+    for secret in ("vless_uuid", "short_id", "public_key", row["vless_uuid"], "pbk123"):
+        assert secret not in resp.text

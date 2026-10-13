@@ -9,6 +9,7 @@ from app.services.relay_service import (
     get_best_relay_node, create_session,
     connect_buyer_to_session, terminate_session,
     get_active_session_for_seller, RelayFullError, build_seller_config,
+    get_active_session_for_buyer, build_buyer_uri,
 )
 from app.services.notification_service import (
     notify_connection_request, notify_session_started,
@@ -151,6 +152,24 @@ async def get_seller_config(current_user: dict = Depends(get_current_user)):
     }
 
 
+@router.get("/buyer-config", response_model=dict)
+async def get_buyer_config(current_user: dict = Depends(get_current_user)):
+    """
+    The buyer's VLESS link for their own live session, again.
+
+    /sessions/connect sends it once; the app calls this after a restart to
+    bring the buyer's VPN back. Contains the buyer's credentials, so only for
+    the buyer themselves.
+    """
+    session = await get_active_session_for_buyer(current_user["id"])
+    if not session or not session.get("vless_uuid"):
+        raise HTTPException(status_code=404, detail="No active connection to restore.")
+    return {
+        "session_id": str(session["id"]),
+        "vless_uri": build_buyer_uri(session),
+    }
+
+
 @router.post("/stop", response_model=APIResponse)
 async def stop_sharing(current_user: dict = Depends(get_current_user)):
     """Seller calls this to stop sharing."""
@@ -227,16 +246,7 @@ async def connect_to_session(
     seller_name = dict(seller).get("display_name") or dict(seller)["phone_number"]
     await notify_session_started(current_user["id"], seller_name)
 
-    # Build VLESS URI for buyer
-    from app.services.relay_service import generate_vless_reality_uri
-    vless_uri = generate_vless_reality_uri(
-        user_uuid=session["vless_uuid"],
-        host=session["host"],
-        port=session["port"],
-        public_key=session["public_key"],
-        short_id=session["short_id"],
-        server_name=session.get("server_name") or "www.google.com",
-    )
+    vless_uri = build_buyer_uri(session)
 
     return ConnectResponse(
         session_id=session["id"],
@@ -296,21 +306,11 @@ async def get_active_session(current_user: dict = Depends(get_current_user)):
         }
 
     # Check as buyer
-    as_buyer = await fetchrow(
-        """
-        SELECT s.*, rn.host, rn.port
-        FROM sharing_sessions s
-        JOIN relay_nodes rn ON rn.id = s.relay_node_id
-        WHERE s.buyer_id = $1
-        AND s.status IN ('connected', 'transferring')
-        ORDER BY s.started_at DESC LIMIT 1
-        """,
-        current_user["id"]
-    )
+    as_buyer = await get_active_session_for_buyer(current_user["id"])
     if as_buyer:
         return {
             "role": "buyer",
-            "session": _session_to_public(dict(as_buyer))
+            "session": _session_to_public(as_buyer)
         }
 
     return {"role": None, "session": None}
